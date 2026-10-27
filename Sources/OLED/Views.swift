@@ -221,6 +221,14 @@ struct SettingsView: View {
                     .foregroundColor(.secondary)
             }
 
+            Section("Updates") {
+                Text("Version \(Updater.currentBuild) · \(app.updateStatus)")
+                Button("Check for updates") { app.checkForUpdates() }
+                Text("OLED checks for updates by itself and installs them when it's idle. You can also say “OLED, update yourself”.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
             Section("Permissions") {
                 Button("Open Accessibility settings") { AccessibilityPermission.request() }
                 Button("Run first-launch setup again") { app.setupDone = false }

@@ -13,6 +13,8 @@ final class AppState: ObservableObject {
 
     let listener = SpeechListener()
     let speaker = Speaker()
+    let updater = Updater()
+    @Published var updateStatus = "Up to date"
     private let router = CommandRouter()
     private var started = false
 
@@ -24,6 +26,15 @@ final class AppState: ObservableObject {
         listener.onCommand = { [weak self] text in self?.run(text) }
         listener.onTimeout = { [weak self] in self?.goToSleep() }
         listener.onStatus = { [weak self] status in self?.listenStatus = status }
+        updater.onStatus = { [weak self] status in self?.updateStatus = status }
+        updater.willInstall = { [weak self] _, proceed in
+            self?.whenIdle {
+                guard let self else { proceed(); return }
+                self.listener.stop()
+                self.stage = .working
+                self.speaker.speak("I've got an update. I'll be right back.") { proceed() }
+            }
+        }
         // Coming back from System Settings with permissions switched on: start listening straight away.
         NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
             guard let self, self.started, self.stage == .asleep,
@@ -37,6 +48,7 @@ final class AppState: ObservableObject {
     func startAssistant() {
         guard !started else { return }
         started = true
+        updater.startAutomaticChecks()
         ensurePermissions { [weak self] ok in
             guard let self else { return }
             if ok {
@@ -100,7 +112,29 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// Runs `work` once OLED isn't busy talking or listening.
+    private func whenIdle(_ work: @escaping () -> Void) {
+        if stage == .asleep && !speaker.isSpeaking {
+            work()
+        } else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in self?.whenIdle(work) }
+        }
+    }
+
+    func checkForUpdates() {
+        updater.check(userAsked: true) { [weak self] text in
+            self?.say(text, thenListen: false)
+        }
+    }
+
     private func run(_ command: String) {
+        let lower = command.lowercased()
+        if lower.contains("update") && (lower.contains("check") || lower.contains("yourself") || lower.contains("install")
+                                        || lower.trimmingCharacters(in: .whitespaces) == "update") {
+            stage = .working
+            checkForUpdates()
+            return
+        }
         stage = .working
         router.handle(command) { [weak self] reply in
             self?.say(reply.text, thenListen: reply.expectsAnswer)
