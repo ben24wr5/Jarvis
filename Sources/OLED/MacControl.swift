@@ -155,10 +155,12 @@ enum Website {
             if !s.hasPrefix("http") { s = "https://" + s }
             return URL(string: s)
         }
-        if force, !compact.isEmpty {
-            return URL(string: "https://www.\(compact).com")
-        }
-        return nil
+        guard !compact.isEmpty else { return nil }
+        // Any other site by name ("the guardian", "bbc weather", "argos"): jump straight to the top web result.
+        var parts = URLComponents(string: "https://duckduckgo.com/")!
+        parts.queryItems = [URLQueryItem(name: "q", value: "!ducky \(s)")]
+        _ = force
+        return parts.url
     }
 
     static func displayName(for spoken: String) -> String {

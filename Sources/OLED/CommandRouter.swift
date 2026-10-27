@@ -113,8 +113,9 @@ final class CommandRouter {
             return Reply(text: "Opening \(app.name).", expectsAnswer: false)
         }
 
-        guard let url = Website.url(from: target, force: forceWeb) else {
-            return Reply(text: "I couldn't find an app called \(Website.displayName(for: target)).", expectsAnswer: false)
+        // Not an installed app, so treat it as a website — any website.
+        guard let url = Website.url(from: target, force: true) else {
+            return Reply(text: "What would you like me to open?", expectsAnswer: false)
         }
         let name = Website.displayName(for: target)
         if let chosen { return openSite(url, name: name, in: chosen) }
