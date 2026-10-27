@@ -70,7 +70,10 @@ enum AppFinder {
            let contains = apps.filter({ simplify($0.name).contains(target) })
             .min(by: { $0.name.count < $1.name.count }) { return contains }
         // e.g. "visual studio code" said as "vs code"
-        if let reverse = apps.first(where: { let n = simplify($0.name); n.count >= 4 && target.contains(n) }) { return reverse }
+        if let reverse = apps.first(where: { app in
+            let n = simplify(app.name)
+            return n.count >= 4 && target.contains(n)
+        }) { return reverse }
         return nil
     }
 
