@@ -1,6 +1,7 @@
 import Foundation
 import AVFoundation
 import Speech
+import ObjCSupport
 
 /// Listens to the microphone and turns speech into commands.
 /// In `.wake` mode it waits for the name "OLED"; in `.direct` mode everything heard is the command.
@@ -40,7 +41,7 @@ final class SpeechListener {
 
     private let recognizer: SFSpeechRecognizer? =
         SFSpeechRecognizer(locale: Locale(identifier: "en-GB")) ?? SFSpeechRecognizer()
-    private let engine = AVAudioEngine()
+    private var engine = AVAudioEngine()
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var task: SFSpeechRecognitionTask?
 
@@ -98,21 +99,29 @@ final class SpeechListener {
         request.contextualStrings = ["OLED", "O.L.E.D.", "O L E D", "Hey OLED", "Firefox", "Safari", "open", "press", "type", "weather"]
         self.request = request
 
+        // A fresh engine each time avoids crashes when the Mac's microphone or its format changes.
+        engine = AVAudioEngine()
+        let engine = self.engine
         let input = engine.inputNode
         let format = input.outputFormat(forBus: 0)
         guard format.channelCount > 0, format.sampleRate > 0 else {
             report("No microphone found – check System Settings → Sound → Input")
             return
         }
-        input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self, weak request] buffer, _ in
-            request?.append(buffer)
-            self?.measureLevel(buffer)
-        }
-        tapInstalled = true
-
-        engine.prepare()
         do {
-            try engine.start()
+            try OLEDSafe.run {
+                input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self, weak request] buffer, _ in
+                    request?.append(buffer)
+                    self?.measureLevel(buffer)
+                }
+            }
+            tapInstalled = true
+            try OLEDSafe.run { engine.prepare() }
+            var startError: Error?
+            try OLEDSafe.run {
+                do { try engine.start() } catch { startError = error }
+            }
+            if let startError { throw startError }
         } catch {
             report("Microphone couldn't start: \(error.localizedDescription)")
             cleanUpAudio()
@@ -164,10 +173,12 @@ final class SpeechListener {
     }
 
     private func cleanUpAudio() {
-        if engine.isRunning { engine.stop() }
-        if tapInstalled {
-            engine.inputNode.removeTap(onBus: 0)
-            tapInstalled = false
+        let engine = self.engine
+        let hadTap = tapInstalled
+        tapInstalled = false
+        try? OLEDSafe.run {
+            if engine.isRunning { engine.stop() }
+            if hadTap { engine.inputNode.removeTap(onBus: 0) }
         }
     }
 

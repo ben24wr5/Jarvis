@@ -25,6 +25,20 @@ struct OLEDApp: App {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    static var logURL: URL {
+        let dir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/OLED", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent("last-problem.txt")
+    }
+
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        // If anything ever goes badly wrong, write down why, so it can be fixed.
+        NSSetUncaughtExceptionHandler { exception in
+            let text = "\(Date())\n\(exception.name.rawValue): \(exception.reason ?? "")\n\(exception.callStackSymbols.prefix(25).joined(separator: "\n"))\n"
+            try? text.write(to: AppDelegate.logURL, atomically: true, encoding: .utf8)
+        }
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)

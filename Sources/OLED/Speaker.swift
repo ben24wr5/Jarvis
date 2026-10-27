@@ -1,5 +1,6 @@
 import Foundation
 import AVFoundation
+import ObjCSupport
 
 /// OLED's voice: a British male system voice run through a robotic effect
 /// (a very short feedback delay gives the metallic "AI" edge, plus a slight pitch drop).
@@ -157,43 +158,56 @@ final class Speaker: NSObject, AVSpeechSynthesizerDelegate {
         session += 1
         effectSynth.stopSpeaking(at: .immediate)
         plainSynth.stopSpeaking(at: .immediate)
-        if engine.isRunning { player.stop() }
+        let engine = self.engine, player = self.player
+        try? OLEDSafe.run { if engine.isRunning { player.stop() } }
         pendingBuffers = 0
         synthesisEnded = false
         completion = nil
     }
 
     private func schedule(_ buffer: AVAudioPCMBuffer, session current: Int) {
-        if connectedFormat == nil || connectedFormat! != buffer.format {
-            if engine.isRunning { engine.stop() }
-            engine.disconnectNodeOutput(player)
-            engine.disconnectNodeOutput(pitch)
-            engine.disconnectNodeOutput(comb)
-            engine.disconnectNodeOutput(room)
-            engine.connect(player, to: pitch, format: buffer.format)
-            engine.connect(pitch, to: comb, format: buffer.format)
-            engine.connect(comb, to: room, format: buffer.format)
-            engine.connect(room, to: engine.mainMixerNode, format: buffer.format)
-            connectedFormat = buffer.format
-        }
-        if !engine.isRunning {
-            engine.prepare()
-            do { try engine.start() } catch {
-                lastIssue = "Speaker effect couldn't start (\(error.localizedDescription)); using the plain voice."
-                effectWorks = false
-                return // the 1.5 s fallback above takes over
+        let engine = self.engine, player = self.player, pitch = self.pitch, comb = self.comb, room = self.room
+        do {
+            if connectedFormat == nil || connectedFormat! != buffer.format {
+                try OLEDSafe.run {
+                    if engine.isRunning { engine.stop() }
+                    engine.disconnectNodeOutput(player)
+                    engine.disconnectNodeOutput(pitch)
+                    engine.disconnectNodeOutput(comb)
+                    engine.disconnectNodeOutput(room)
+                    engine.connect(player, to: pitch, format: buffer.format)
+                    engine.connect(pitch, to: comb, format: buffer.format)
+                    engine.connect(comb, to: room, format: buffer.format)
+                    engine.connect(room, to: engine.mainMixerNode, format: buffer.format)
+                }
+                connectedFormat = buffer.format
             }
-        }
-        receivedAudio = true
-        pendingBuffers += 1
-        player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
-            DispatchQueue.main.async {
-                guard let self, self.session == current else { return }
-                self.pendingBuffers = max(0, self.pendingBuffers - 1)
-                self.finishIfDone()
+            if !engine.isRunning {
+                var startError: Error?
+                try OLEDSafe.run {
+                    engine.prepare()
+                    do { try engine.start() } catch { startError = error }
+                }
+                if let startError { throw startError }
             }
+            try OLEDSafe.run {
+                player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
+                    DispatchQueue.main.async {
+                        guard let self, self.session == current else { return }
+                        self.pendingBuffers = max(0, self.pendingBuffers - 1)
+                        self.finishIfDone()
+                    }
+                }
+                if !player.isPlaying { player.play() }
+            }
+            receivedAudio = true
+            pendingBuffers += 1
+        } catch {
+            // Robotic path failed: the 1.5 s fallback speaks with the plain voice instead.
+            lastIssue = "Robotic voice effect failed (\(error.localizedDescription)); using the plain voice."
+            effectWorks = false
+            connectedFormat = nil
         }
-        if !player.isPlaying { player.play() }
     }
 
     private func finishIfDone() {
