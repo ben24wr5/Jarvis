@@ -253,6 +253,52 @@ final class KeyboardController {
         }
     }
 
+    /// Opens the browser, starts a new tab, types the address and presses Return — like doing it on the keyboard.
+    func typeAddress(_ address: String, in browser: Browser) {
+        guard let appURL = browser.appURL else { return }
+        let alreadyRunning = NSRunningApplication.runningApplications(withBundleIdentifier: browser.bundleID)
+            .contains { !$0.isTerminated }
+        let config = NSWorkspace.OpenConfiguration()
+        config.activates = true
+        NSWorkspace.shared.openApplication(at: appURL, configuration: config, completionHandler: nil)
+
+        let wait = alreadyRunning ? 0.7 : 2.2
+        DispatchQueue.main.asyncAfter(deadline: .now() + wait) {
+            Self.post(key: 17, flags: .maskCommand) // Command-T: new tab, cursor in the address bar
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                DispatchQueue.global(qos: .userInitiated).async {
+                    Self.typeNow(address)
+                    usleep(150_000)
+                    DispatchQueue.main.async { Self.post(key: 36, flags: []) } // Return
+                }
+            }
+        }
+    }
+
+    private static func post(key: CGKeyCode, flags: CGEventFlags) {
+        let src = CGEventSource(stateID: .hidSystemState)
+        let down = CGEvent(keyboardEventSource: src, virtualKey: key, keyDown: true)
+        let up = CGEvent(keyboardEventSource: src, virtualKey: key, keyDown: false)
+        down?.flags = flags
+        up?.flags = flags
+        down?.post(tap: .cghidEventTap)
+        up?.post(tap: .cghidEventTap)
+    }
+
+    private static func typeNow(_ text: String) {
+        let src = CGEventSource(stateID: .hidSystemState)
+        for scalar in text.utf16 {
+            var ch = scalar
+            let down = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: true)
+            let up = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: false)
+            down?.keyboardSetUnicodeString(stringLength: 1, unicodeString: &ch)
+            up?.keyboardSetUnicodeString(stringLength: 1, unicodeString: &ch)
+            down?.post(tap: .cghidEventTap)
+            up?.post(tap: .cghidEventTap)
+            usleep(25_000)
+        }
+    }
+
     func press(key: CGKeyCode, flags: CGEventFlags) {
         bringBackTargetApp {
             let src = CGEventSource(stateID: .hidSystemState)

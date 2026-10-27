@@ -83,6 +83,12 @@ final class CommandRouter {
     // MARK: Opening
 
     private func open(_ target: inout String) -> Reply {
+        var forceWeb = false
+        for filler in ["this website ", "the website ", "website ", "this site ", "the site ", "this link ", "this page "]
+        where target.hasPrefix(filler) {
+            target.removeFirst(filler.count)
+            forceWeb = true
+        }
         for filler in ["the ", "my ", "up "] where target.hasPrefix(filler) { target.removeFirst(filler.count) }
         for filler in [" please", " for me", " app", " application"] where target.hasSuffix(filler) {
             target.removeLast(filler.count)
@@ -99,7 +105,7 @@ final class CommandRouter {
             chosen = browser
         }
 
-        var forceWeb = chosen != nil
+        if chosen != nil { forceWeb = true }
         for word in [" website", " web site", " site", " web page", " page", " link"] where target.hasSuffix(word) {
             target.removeLast(word.count)
             forceWeb = true
@@ -128,10 +134,18 @@ final class CommandRouter {
 
     private func openSite(_ url: URL, name: String, in browser: Browser) -> Reply {
         clearPending()
-        if browser.open(url) {
-            return Reply(text: "Opening \(name) in \(browser.rawValue).", expectsAnswer: false)
+        guard browser.appURL != nil else {
+            return Reply(text: "\(browser.rawValue) doesn't seem to be installed on this Mac.", expectsAnswer: false)
         }
-        return Reply(text: "\(browser.rawValue) doesn't seem to be installed on this Mac.", expectsAnswer: false)
+        if AccessibilityPermission.isGranted {
+            // Type the address into the browser for you.
+            var address = url.absoluteString
+            for scheme in ["https://", "http://"] where address.hasPrefix(scheme) { address.removeFirst(scheme.count) }
+            keyboard.typeAddress(address, in: browser)
+        } else {
+            _ = browser.open(url)
+        }
+        return Reply(text: "Opening \(name) in \(browser.rawValue).", expectsAnswer: false)
     }
 
     private func clearPending() {
