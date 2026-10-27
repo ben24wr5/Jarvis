@@ -1,10 +1,12 @@
 import Foundation
 import AVFoundation
 
-/// OLED's voice: a British male system voice run through a light robotic effect
+/// OLED's voice: a British male system voice run through a robotic effect
 /// (a very short feedback delay gives the metallic "AI" edge, plus a slight pitch drop).
-final class Speaker {
-    private let synth = AVSpeechSynthesizer()
+/// If the effect path ever produces no sound, OLED falls back to speaking directly, so it is never silent.
+final class Speaker: NSObject, AVSpeechSynthesizerDelegate {
+    private let effectSynth = AVSpeechSynthesizer()
+    private let plainSynth = AVSpeechSynthesizer()
     private let engine = AVAudioEngine()
     private let player = AVAudioPlayerNode()
     private let pitch = AVAudioUnitTimePitch()
@@ -13,14 +15,21 @@ final class Speaker {
     private var connectedFormat: AVAudioFormat?
 
     private var pendingBuffers = 0
+    private var receivedAudio = false
     private var synthesisEnded = false
     private var completion: (() -> Void)?
     private var session = 0
+    private var effectWorks = true
+
+    /// Last problem with the voice, shown in Settings → Status.
+    private(set) var lastIssue: String?
 
     static let robotKey = "robotLevel"
     static let voiceKey = "voiceIdentifier"
 
-    init() {
+    override init() {
+        super.init()
+        plainSynth.delegate = self
         engine.attach(player)
         engine.attach(pitch)
         engine.attach(comb)
@@ -58,13 +67,14 @@ final class Speaker {
     }
 
     static var selectedVoice: AVSpeechSynthesisVoice? {
-        if let id = UserDefaults.standard.string(forKey: voiceKey),
+        if let id = UserDefaults.standard.string(forKey: voiceKey), !id.isEmpty,
            let voice = AVSpeechSynthesisVoice(identifier: id) {
             return voice
         }
         if let best = britishVoices.first(where: { $0.gender == .male }) { return best }
         if let daniel = AVSpeechSynthesisVoice(identifier: "com.apple.voice.compact.en-GB.Daniel") { return daniel }
-        return AVSpeechSynthesisVoice(language: "en-GB")
+        if let gb = AVSpeechSynthesisVoice(language: "en-GB") { return gb }
+        return AVSpeechSynthesisVoice(language: "en-US")
     }
 
     /// Makes sure the name is always said letter by letter: "O-L-E-D".
@@ -74,6 +84,15 @@ final class Speaker {
         }
         let ns = text as NSString
         return regex.stringByReplacingMatches(in: text, range: NSRange(location: 0, length: ns.length), withTemplate: "O. L. E. D.")
+    }
+
+    private func makeUtterance(_ text: String) -> AVSpeechUtterance {
+        let utterance = AVSpeechUtterance(string: Self.spokenForm(of: text))
+        utterance.voice = Self.selectedVoice
+        utterance.rate = AVSpeechUtteranceDefaultSpeechRate * 0.98
+        utterance.pitchMultiplier = 0.95
+        utterance.volume = 1.0
+        return utterance
     }
 
     // MARK: Speaking
@@ -86,49 +105,59 @@ final class Speaker {
         let current = session
         self.completion = completion
         pendingBuffers = 0
+        receivedAudio = false
         synthesisEnded = false
 
-        let utterance = AVSpeechUtterance(string: Self.spokenForm(of: text))
-        utterance.voice = Self.selectedVoice
-        utterance.rate = AVSpeechUtteranceDefaultSpeechRate * 0.98
-        utterance.pitchMultiplier = 0.95
-        utterance.postUtteranceDelay = 0.05
+        guard effectWorks else {
+            speakPlain(text)
+            return
+        }
 
-        synth.write(utterance) { [weak self] buffer in
+        effectSynth.write(makeUtterance(text)) { [weak self] buffer in
             guard let pcm = buffer as? AVAudioPCMBuffer else { return }
             let copy = Self.floatCopy(of: pcm)
+            let isEnd = pcm.frameLength == 0
             DispatchQueue.main.async {
                 guard let self, self.session == current else { return }
-                if pcm.frameLength == 0 || copy == nil {
-                    if pcm.frameLength == 0 {
-                        self.synthesisEnded = true
-                        self.finishIfDone()
-                    }
-                    return
+                if isEnd {
+                    self.synthesisEnded = true
+                    self.finishIfDone()
+                } else if let copy {
+                    self.schedule(copy, session: current)
                 }
-                self.schedule(copy!, session: current)
             }
         }
 
-        // Safety net: never leave the app stuck "speaking".
-        let words = max(1, text.split(separator: " ").count)
-        let limit = 4 + Double(words) * 0.6
-        DispatchQueue.main.asyncAfter(deadline: .now() + limit) { [weak self] in
-            guard let self, self.session == current, self.completion != nil else { return }
-            if !self.player.isPlaying || self.pendingBuffers == 0 {
-                self.synthesisEnded = true
-                self.pendingBuffers = 0
-                self.finishIfDone()
-            }
+        // If the robotic path makes no sound quickly, speak directly instead.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            guard let self, self.session == current, self.completion != nil, !self.receivedAudio else { return }
+            self.lastIssue = "Robotic voice effect produced no audio, so OLED is using the plain voice."
+            self.effectWorks = false
+            self.effectSynth.stopSpeaking(at: .immediate)
+            self.speakPlain(text)
         }
     }
 
+    private func speakPlain(_ text: String) {
+        plainSynth.stopSpeaking(at: .immediate)
+        plainSynth.speak(makeUtterance(text))
+    }
+
+    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let done = self.completion else { return }
+            self.completion = nil
+            done()
+        }
+    }
+
+    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {}
+
     func stop() {
         session += 1
-        synth.stopSpeaking(at: .immediate)
-        if engine.isRunning {
-            player.stop()
-        }
+        effectSynth.stopSpeaking(at: .immediate)
+        plainSynth.stopSpeaking(at: .immediate)
+        if engine.isRunning { player.stop() }
         pendingBuffers = 0
         synthesisEnded = false
         completion = nil
@@ -150,13 +179,12 @@ final class Speaker {
         if !engine.isRunning {
             engine.prepare()
             do { try engine.start() } catch {
-                NSLog("OLED: speaker engine failed: \(error.localizedDescription)")
-                synthesisEnded = true
-                pendingBuffers = 0
-                finishIfDone()
-                return
+                lastIssue = "Speaker effect couldn't start (\(error.localizedDescription)); using the plain voice."
+                effectWorks = false
+                return // the 1.5 s fallback above takes over
             }
         }
+        receivedAudio = true
         pendingBuffers += 1
         player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
             DispatchQueue.main.async {
@@ -169,7 +197,7 @@ final class Speaker {
     }
 
     private func finishIfDone() {
-        guard synthesisEnded, pendingBuffers == 0, let done = completion else { return }
+        guard synthesisEnded, pendingBuffers == 0, receivedAudio, let done = completion else { return }
         completion = nil
         done()
     }

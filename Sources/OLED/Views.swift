@@ -142,6 +142,33 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
+            Section("Status") {
+                TimelineView(.periodic(from: .now, by: 0.5)) { _ in
+                    VStack(alignment: .leading, spacing: 6) {
+                        statusRow("Microphone", ok: AppState.microphoneStatusOK)
+                        statusRow("Speech Recognition", ok: AppState.speechStatusOK)
+                        statusRow("Accessibility (keyboard & typing)", ok: AccessibilityPermission.isGranted)
+                        Text("Listening: \(app.listenStatus)")
+                        HStack(spacing: 8) {
+                            Text("Mic level")
+                            ProgressView(value: Double(min(1, app.listener.micLevel * 3)))
+                        }
+                        if !app.listener.lastHeard.isEmpty {
+                            Text("Last heard: “\(app.listener.lastHeard)”").foregroundColor(.secondary)
+                        }
+                        if let issue = app.speaker.lastIssue {
+                            Text("Voice: \(issue)").foregroundColor(.orange)
+                        }
+                    }
+                    .font(.callout)
+                }
+                HStack {
+                    Button("Microphone settings") { AppState.openPrivacy("Privacy_Microphone") }
+                    Button("Speech Recognition settings") { AppState.openPrivacy("Privacy_SpeechRecognition") }
+                }
+                Button("Restart listening") { app.restartListening() }
+            }
+
             Section("Voice") {
                 Picker("British voice", selection: $voiceID) {
                     ForEach(voices, id: \.identifier) { v in
@@ -200,7 +227,16 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 520, height: 620)
+        .frame(width: 560, height: 760)
+    }
+
+    private func statusRow(_ name: String, ok: Bool) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: ok ? "checkmark.circle.fill" : "xmark.circle.fill")
+                .foregroundColor(ok ? .green : .red)
+            Text(name)
+            Text(ok ? "Allowed" : "Not allowed").foregroundColor(.secondary)
+        }
     }
 
     private func label(for v: AVSpeechSynthesisVoice) -> String {
