@@ -24,7 +24,8 @@ final class AppState: ObservableObject {
     init() {
         listener.onWake = { [weak self] in self?.heardName() }
         listener.onCommand = { [weak self] text in self?.run(text) }
-        listener.onTimeout = { [weak self] in self?.goToSleep() }
+        listener.onTimeout = { [weak self] heardSound in self?.nothingUsableHeard(heardSound) }
+        listener.onFailure = { [weak self] reason in self?.listeningFailed(reason) }
         listener.onStatus = { [weak self] status in self?.listenStatus = status }
         updater.onStatus = { [weak self] status in self?.updateStatus = status }
         updater.willInstall = { [weak self] _, proceed in
@@ -127,8 +128,48 @@ final class AppState: ObservableObject {
     // MARK: Interaction
 
     /// Clicking the orb works just like saying "OLED".
+    /// True while OLED is waiting for something the user started (a click, its name, or a question it asked).
+    private var expectingSpeech = false
+    private var failureAnnounced = false
+
+    private func nothingUsableHeard(_ heardSound: Bool) {
+        guard expectingSpeech else { goToSleep(); return }
+        expectingSpeech = false
+        if heardSound {
+            say("Sorry, I didn't catch that.", thenListen: false)
+        } else {
+            say("I can't hear anything from the microphone. Please check the sound input in System Settings.", thenListen: false)
+        }
+    }
+
+    private func listeningFailed(_ reason: String) {
+        expectingSpeech = false
+        if failureAnnounced && stage == .asleep {
+            // Already explained; try again quietly in a little while.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 20) { [weak self] in
+                if self?.stage == .asleep { self?.listener.start(mode: .wake) }
+            }
+            return
+        }
+        failureAnnounced = true
+        listener.stop()
+        stage = .speaking
+        let message = "I couldn't start listening. Apple's speech recognition said: \(reason). Please turn on Dictation in System Settings, under Keyboard, then try again. I've opened it for you."
+        if let url = URL(string: "x-apple.systempreferences:com.apple.Keyboard-Settings.extension") {
+            NSWorkspace.shared.open(url)
+        }
+        speaker.speak(message) { [weak self] in
+            self?.stage = .asleep
+            DispatchQueue.main.asyncAfter(deadline: .now() + 20) { [weak self] in
+                if self?.stage == .asleep { self?.listener.start(mode: .wake) }
+            }
+        }
+    }
+
     func orbTapped() {
         speaker.stop()
+        expectingSpeech = true
+        failureAnnounced = false
         lastBlocked = nil // a click always gets an answer, even if a problem was already explained
         NSSound(named: "Tink")?.play()
         stage = .wake
@@ -139,6 +180,7 @@ final class AppState: ObservableObject {
     }
 
     private func heardName() {
+        expectingSpeech = true
         NSSound(named: "Tink")?.play()
         stage = .wake
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
@@ -162,6 +204,7 @@ final class AppState: ObservableObject {
     }
 
     private func run(_ command: String) {
+        expectingSpeech = false
         let lower = command.lowercased()
         if lower.contains("update") && (lower.contains("check") || lower.contains("yourself") || lower.contains("install")
                                         || lower.trimmingCharacters(in: .whitespaces) == "update") {

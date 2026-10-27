@@ -10,7 +10,16 @@ final class SpeechListener {
 
     var onWake: (() -> Void)?
     var onCommand: ((String) -> Void)?
-    var onTimeout: (() -> Void)?
+    /// Nothing usable was said. `heardSound` says whether the microphone picked up any sound at all.
+    var onTimeout: ((_ heardSound: Bool) -> Void)?
+    /// Listening keeps failing; the text is the reason Apple gave.
+    var onFailure: ((String) -> Void)?
+
+    private var sessionStarted = Date()
+    private var gotText = false
+    private var fastFailures = 0
+    private var sessionPeak: Float = 0
+    private var heardSound: Bool { sessionPeak > 0.02 }
     /// Plain-English status for Settings → Status.
     var onStatus: ((String) -> Void)?
 
@@ -29,6 +38,7 @@ final class SpeechListener {
         var peak: Float = 0
         for i in 0..<Int(buffer.frameLength) { peak = max(peak, abs(data[i])) }
         micLevel = peak
+        if peak > sessionPeak { sessionPeak = peak }
     }
 
     /// Errors that happen in normal use (silence, restarts) and aren't worth showing.
@@ -105,6 +115,9 @@ final class SpeechListener {
         self.directTimeout = timeout
         woke = (mode == .direct)
         commandText = ""
+        sessionStarted = Date()
+        gotText = false
+        sessionPeak = 0
         let gen = generation
 
         let request = SFSpeechAudioBufferRecognitionRequest()
@@ -156,21 +169,37 @@ final class SpeechListener {
             let nsError = error as NSError?
             DispatchQueue.main.async {
                 guard let self, self.generation == gen else { return }
-                if let text {
+                if let text, !text.isEmpty {
                     self.lastHeard = text
+                    self.gotText = true
+                    self.fastFailures = 0
                     self.handle(text: text)
                 }
-                if let nsError, !Self.isRoutine(nsError) {
-                    self.report("Speech recognition error: \(nsError.localizedDescription)")
+                if let nsError {
                     let message = nsError.localizedDescription.lowercased()
-                    if self.useOnDevice {
-                        // On-device model missing or failing: switch to Apple's online recogniser.
-                        self.useOnDevice = false
-                    } else if message.contains("disabled") || message.contains("siri") || message.contains("dictation") {
+                    let detail = "\(nsError.localizedDescription) [\(nsError.domain) \(nsError.code)]"
+                    if message.contains("disabled") || message.contains("siri") || message.contains("dictation") {
+                        self.report("Speech recognition error: \(detail)")
                         self.useOnDevice = true
                         self.stop()
                         self.onBlocked?(.dictation)
                         return
+                    }
+                    // An error straight after starting, before hearing anything, means this way of
+                    // recognising doesn't work on this Mac: switch between on-device and online.
+                    let fast = !self.gotText && Date().timeIntervalSince(self.sessionStarted) < 2.5
+                    if fast {
+                        self.fastFailures += 1
+                        self.useOnDevice.toggle()
+                        self.report("Speech recognition error: \(detail) – trying another way")
+                        if self.fastFailures >= 4 {
+                            self.fastFailures = 0
+                            self.stop()
+                            self.onFailure?(nsError.localizedDescription)
+                            return
+                        }
+                    } else if !Self.isRoutine(nsError) {
+                        self.report("Speech recognition error: \(detail)")
                     }
                 }
                 if isFinal || nsError != nil { self.recognitionEnded() }
@@ -263,17 +292,19 @@ final class SpeechListener {
         giveUpTimer = Timer.scheduledTimer(withTimeInterval: directTimeout, repeats: false) { [weak self] _ in
             guard let self, self.generation == gen else { return }
             if self.commandText.isEmpty {
+                let heard = self.heardSound
                 self.stop()
-                self.onTimeout?()
+                self.onTimeout?(heard)
             }
         }
     }
 
     private func finish() {
         let command = commandText
+        let heard = heardSound
         stop()
         if command.isEmpty {
-            onTimeout?()
+            onTimeout?(heard)
         } else {
             onCommand?(command)
         }
@@ -290,10 +321,13 @@ final class SpeechListener {
                 let remaining = timer?.fireDate.timeIntervalSinceNow ?? 3
                 timer?.invalidate()
                 if remaining > 1 {
+                    let peak = sessionPeak
                     start(mode: .direct, timeout: remaining)
+                    sessionPeak = max(sessionPeak, peak)
                 } else {
+                    let heard = heardSound
                     stop()
-                    onTimeout?()
+                    onTimeout?(heard)
                 }
             }
         } else {
