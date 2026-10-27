@@ -15,6 +15,107 @@ final class CommandRouter {
     private var pendingURL: URL?
     private var pendingName = ""
     private var browserAsks = 0
+    private var pendingWeatherTomorrow: Bool?
+
+    private static let jokes = [
+        "Why don't skeletons fight each other? They don't have the guts.",
+        "I told my computer I needed a break. It said, no problem, I'll go to sleep.",
+        "Why did the scarecrow win an award? Because he was outstanding in his field.",
+        "What do you call a fake noodle? An impasta.",
+        "Why do programmers prefer dark mode? Because light attracts bugs.",
+        "I'm reading a book about anti-gravity. It's impossible to put down.",
+        "Why did the bicycle fall over? It was two tired.",
+        "What's orange and sounds like a parrot? A carrot."
+    ]
+
+    /// Greetings, goodbyes, time, date, weather and (offline) jokes. Returns true when it answered.
+    private func everyday(_ text: String, raw: String, reply: @escaping (Reply) -> Void) -> Bool {
+        let words = text.replacingOccurrences(of: "oled", with: "").trimmingCharacters(in: .whitespaces)
+
+        let byes = ["bye", "goodbye", "good bye", "bye bye", "see you", "see ya", "see you later", "good night",
+                    "night night", "that's all", "that is all", "thanks bye", "ok bye", "okay bye"]
+        if byes.contains(words) || words.hasPrefix("bye ") || words.hasPrefix("goodbye ") {
+            chat.reset()
+            let night = Calendar.current.component(.hour, from: Date()) >= 20
+            reply(Reply(text: night ? "Good night. Just say my name if you need me." : "Goodbye. Just say my name if you need me.", expectsAnswer: false))
+            return true
+        }
+
+        let hellos = ["hi", "hello", "hey", "hiya", "hey there", "hi there", "hello there", "alright", "yo",
+                      "good morning", "good afternoon", "good evening", "morning", "afternoon", "evening"]
+        if hellos.contains(words) {
+            let hour = Calendar.current.component(.hour, from: Date())
+            let greeting = hour < 12 ? "Good morning" : (hour < 18 ? "Good afternoon" : "Good evening")
+            reply(Reply(text: "\(greeting). How can I help?", expectsAnswer: true))
+            return true
+        }
+
+        if ["thanks", "thank you", "cheers", "thank you very much", "thanks a lot", "nice one"].contains(words) {
+            reply(Reply(text: "You're very welcome.", expectsAnswer: false))
+            return true
+        }
+
+        if words.contains("what time") || words.contains("the time") || words == "time" {
+            let f = DateFormatter()
+            f.locale = Locale(identifier: "en_GB")
+            f.dateFormat = "h:mm a"
+            reply(Reply(text: "It's \(f.string(from: Date())).", expectsAnswer: false))
+            return true
+        }
+
+        if words.contains("the date") || words.contains("what day is it") || words.contains("what day is today")
+            || words.contains("today's date") {
+            let f = DateFormatter()
+            f.locale = Locale(identifier: "en_GB")
+            f.dateFormat = "EEEE d MMMM yyyy"
+            reply(Reply(text: "Today is \(f.string(from: Date())).", expectsAnswer: false))
+            return true
+        }
+
+        let weatherWords = ["weather", "forecast", "temperature", "going to rain", "gonna rain", "will it rain",
+                            "is it raining", "is it cold", "is it hot", "is it warm", "need an umbrella", "need a coat"]
+        if weatherWords.contains(where: { words.contains($0) }) {
+            let tomorrow = words.contains("tomorrow")
+            if let place = Self.placeIn(words) ?? Weather.homeTown {
+                Weather.report(for: place, tomorrow: tomorrow) { reply(Reply(text: $0, expectsAnswer: false)) }
+            } else {
+                pendingWeatherTomorrow = tomorrow
+                reply(Reply(text: "Which town or city should I check?", expectsAnswer: true))
+            }
+            return true
+        }
+
+        if words.contains("joke"), KeyStore.apiKey == nil {
+            reply(Reply(text: Self.jokes.randomElement()!, expectsAnswer: true))
+            return true
+        }
+        return false
+    }
+
+    /// "what's the weather in leeds tomorrow" → "leeds"
+    private static func placeIn(_ text: String) -> String? {
+        var t = " " + text + " "
+        for filler in [" tomorrow", " today", " right now", " now", " like", " this morning", " this afternoon",
+                       " this evening", " tonight", " please", " outside"] {
+            t = t.replacingOccurrences(of: filler + " ", with: " ")
+        }
+        t = t.trimmingCharacters(in: .whitespaces)
+        for marker in [" in ", " for ", " at "] {
+            if let r = t.range(of: marker, options: .backwards) {
+                let place = cleanPlace(String(t[r.upperBound...]))
+                if !place.isEmpty, !["the", "my area", "here", "my town"].contains(place.lowercased()) { return place }
+            }
+        }
+        return nil
+    }
+
+    private static func cleanPlace(_ s: String) -> String {
+        var p = s.trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
+        for lead in ["in ", "for ", "it's ", "it is ", "i'm in ", "i live in "] where p.lowercased().hasPrefix(lead) {
+            p = String(p.dropFirst(lead.count))
+        }
+        return p.split(separator: " ").map { $0.prefix(1).uppercased() + $0.dropFirst() }.joined(separator: " ")
+    }
 
     private static let cancelWords = ["cancel", "stop", "never mind", "nevermind", "forget it", "nothing", "no thanks"]
     private static let openVerbs = ["open up ", "open ", "launch ", "start ", "run ", "go to ", "visit ", "show me ", "load ", "bring up "]
@@ -44,10 +145,25 @@ final class CommandRouter {
             reply(Reply(text: "Never mind, I'll leave it for now.", expectsAnswer: false)); return
         }
 
+        // 1b. Answering "Which town should I check?"
+        if let tomorrow = pendingWeatherTomorrow {
+            pendingWeatherTomorrow = nil
+            if Self.cancelWords.contains(where: { text.contains($0) }) {
+                reply(Reply(text: "Okay.", expectsAnswer: false)); return
+            }
+            let town = Self.cleanPlace(raw)
+            Weather.homeTown = town
+            Weather.report(for: town, tomorrow: tomorrow) { reply(Reply(text: $0, expectsAnswer: false)) }
+            return
+        }
+
         // 2. Cancel
         if Self.cancelWords.contains(politeStripped) {
             reply(Reply(text: "Okay.", expectsAnswer: false)); return
         }
+
+        // 2b. Everyday questions answered right here on the Mac (like Siri)
+        if everyday(politeStripped, raw: raw, reply: reply) { return }
 
         // 3. Typing
         for prefix in ["type out ", "type ", "write "] where politeStripped.hasPrefix(prefix) {

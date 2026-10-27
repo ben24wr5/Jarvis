@@ -35,6 +35,8 @@ jobs:
           exit $status
 
       - name: Publish OLED.dmg as the latest release
+        # Only publish once the real app icon has been added.
+        if: hashFiles('Resources/AppIcon.png') != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |

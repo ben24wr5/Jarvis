@@ -137,6 +137,7 @@ struct SettingsView: View {
     @State private var saved = false
     @State private var robot = UserDefaults.standard.object(forKey: Speaker.robotKey) as? Double ?? 0.5
     @State private var voiceID = Speaker.selectedVoice?.identifier ?? ""
+    @State private var homeTown = Weather.homeTown ?? ""
     private let voices = Speaker.britishVoices
 
     var body: some View {
@@ -177,13 +178,29 @@ struct SettingsView: View {
                     .foregroundColor(.secondary)
             }
 
+            Section("Weather") {
+                TextField("Home town or city", text: $homeTown)
+                    .onChange(of: homeTown) { t in Weather.homeTown = t }
+                Text("Used when you ask “what's the weather?” without naming a place.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
+            Section("Weather") {
+                TextField("Home town (e.g. London)", text: $homeTown)
+                    .onChange(of: homeTown) { t in Weather.homeTown = t }
+                Text("Used when you ask “what's the weather?” without naming a place.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
             Section("Permissions") {
                 Button("Open Accessibility settings") { AccessibilityPermission.request() }
                 Button("Run first-launch setup again") { app.setupDone = false }
             }
         }
         .formStyle(.grouped)
-        .frame(width: 520, height: 520)
+        .frame(width: 520, height: 620)
     }
 
     private func label(for v: AVSpeechSynthesisVoice) -> String {
