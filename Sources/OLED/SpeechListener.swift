@@ -39,8 +39,17 @@ final class SpeechListener {
         return false
     }
 
-    private let recognizer: SFSpeechRecognizer? =
-        SFSpeechRecognizer(locale: Locale(identifier: "en-GB")) ?? SFSpeechRecognizer()
+    private let recognizers: [SFSpeechRecognizer] = [
+        SFSpeechRecognizer(locale: Locale(identifier: "en-GB")),
+        SFSpeechRecognizer(),
+        SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
+    ].compactMap { $0 }
+    private var useOnDevice = true
+
+    /// British English if it's ready, otherwise the Mac's own language, otherwise US English.
+    private func currentRecognizer() -> SFSpeechRecognizer? {
+        recognizers.first(where: { $0.isAvailable })
+    }
     private var engine = AVAudioEngine()
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var task: SFSpeechRecognitionTask?
@@ -64,24 +73,32 @@ final class SpeechListener {
 
     // MARK: Control
 
-    func start(mode: Mode, timeout: TimeInterval = 7) {
+    /// Why listening can't work, in a form OLED can say out loud.
+    enum Blocker { case microphone, speechRecognition, dictation, noMicrophone }
+    var onBlocked: ((Blocker) -> Void)?
+
+    /// Starts listening. Returns false (and calls `onBlocked`) when something stops it working.
+    @discardableResult
+    func start(mode: Mode, timeout: TimeInterval = 7) -> Bool {
         stop()
         if AVCaptureDevice.authorizationStatus(for: .audio) != .authorized {
             report("Microphone access is off")
-            return
+            onBlocked?(.microphone)
+            return false
         }
         if SFSpeechRecognizer.authorizationStatus() != .authorized {
             report("Speech Recognition access is off")
-            return
+            onBlocked?(.speechRecognition)
+            return false
         }
-        guard let recognizer, recognizer.isAvailable else {
+        guard let recognizer = currentRecognizer() else {
             report("Apple speech recognition isn't available right now – retrying")
             let gen = generation
             DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
                 guard let self, self.generation == gen else { return }
                 self.start(mode: mode, timeout: timeout)
             }
-            return
+            return mode == .wake
         }
 
         self.mode = mode
@@ -92,9 +109,8 @@ final class SpeechListener {
 
         let request = SFSpeechAudioBufferRecognitionRequest()
         request.shouldReportPartialResults = true
-        // Use Apple's online recogniser when needed; forcing on-device fails silently when the
-        // British English speech model isn't downloaded.
-        request.requiresOnDeviceRecognition = false
+        // On-device first (works even with Siri/Dictation off); online if the on-device model fails.
+        request.requiresOnDeviceRecognition = useOnDevice && recognizer.supportsOnDeviceRecognition
         if #available(macOS 13, *) { request.addsPunctuation = false }
         request.contextualStrings = ["OLED", "O.L.E.D.", "O L E D", "Hey OLED", "Firefox", "Safari", "open", "press", "type", "weather"]
         self.request = request
@@ -106,7 +122,8 @@ final class SpeechListener {
         let format = input.outputFormat(forBus: 0)
         guard format.channelCount > 0, format.sampleRate > 0 else {
             report("No microphone found – check System Settings → Sound → Input")
-            return
+            onBlocked?(.noMicrophone)
+            return false
         }
         do {
             try OLEDSafe.run {
@@ -130,7 +147,7 @@ final class SpeechListener {
                 guard let self, self.generation == gen2 else { return }
                 self.start(mode: mode, timeout: timeout)
             }
-            return
+            return mode == .wake
         }
 
         task = recognizer.recognitionTask(with: request) { [weak self] result, error in
@@ -145,6 +162,16 @@ final class SpeechListener {
                 }
                 if let nsError, !Self.isRoutine(nsError) {
                     self.report("Speech recognition error: \(nsError.localizedDescription)")
+                    let message = nsError.localizedDescription.lowercased()
+                    if self.useOnDevice {
+                        // On-device model missing or failing: switch to Apple's online recogniser.
+                        self.useOnDevice = false
+                    } else if message.contains("disabled") || message.contains("siri") || message.contains("dictation") {
+                        self.useOnDevice = true
+                        self.stop()
+                        self.onBlocked?(.dictation)
+                        return
+                    }
                 }
                 if isFinal || nsError != nil { self.recognitionEnded() }
             }
@@ -160,6 +187,7 @@ final class SpeechListener {
                 self.start(mode: .wake)
             }
         }
+        return true
     }
 
     func stop() {

@@ -107,14 +107,16 @@ struct OrbView: View {
             var ctx = context
             ctx.translateBy(x: c.x, y: c.y)
             ctx.rotate(by: .radians(clock.p2))
-            var open = Path()
+            // Each arc is drawn on its own so no straight lines join them.
             for (start, end) in [(-127.0, -98.0), (-82.0, -53.0), (52.0, 80.0), (100.0, 128.0)] {
-                let sub = Path { p in
-                    p.addArc(center: .zero, radius: 150 * s, startAngle: .degrees(start), endAngle: .degrees(end), clockwise: false)
-                }
-                open.addPath(sub)
+                let r = 150 * s
+                let a0 = start * Double.pi / 180
+                var arc = Path()
+                arc.move(to: CGPoint(x: r * cos(a0), y: r * sin(a0)))
+                arc.addArc(center: .zero, radius: r, startAngle: .degrees(start), endAngle: .degrees(end), clockwise: false)
+                ctx.stroke(arc, with: .color(color(0x3FB8FF, 0.7, boost: b)),
+                           style: StrokeStyle(lineWidth: 1.6 * s, lineCap: .round))
             }
-            ctx.stroke(open, with: .color(color(0x3FB8FF, 0.7, boost: b)), lineWidth: 1.6 * s)
         }
 
         // Glass sphere
