@@ -22,7 +22,17 @@ jobs:
           BUILD_NUMBER: ${{ github.run_number }}
         run: |
           chmod +x scripts/build_app.sh
-          ./scripts/build_app.sh
+          set +e
+          ./scripts/build_app.sh 2>&1 | tee build.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            # Surface each compiler error as an annotation so it is easy to read.
+            grep -E "error:|Error:|No such file|command not found" build.log | sort -u | head -40 | while IFS= read -r line; do
+              echo "::error::$line"
+            done
+            tail -15 build.log | while IFS= read -r line; do echo "::warning::$line"; done
+          fi
+          exit $status
 
       - name: Publish OLED.dmg as the latest release
         env:
