@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en-GB</string>
+    <key>CFBundleDisplayName</key>
+    <string>OLED</string>
+    <key>CFBundleExecutable</key>
+    <string>OLED</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.ben24wr5.oled</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>OLED</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>CFBundleVersion</key>
+    <string>BUILD_NUMBER</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>13.0</string>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.productivity</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSPrincipalClass</key>
+    <string>NSApplication</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>OLED listens for its name and your spoken commands.</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>OLED turns what you say into commands it can carry out.</string>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>OLED opens apps and websites when you ask it to.</string>
+    <key>NSSupportsAutomaticTermination</key>
+    <false/>
+</dict>
+</plist>

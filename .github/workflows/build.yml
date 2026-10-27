@@ -1,0 +1,35 @@
+name: Build OLED
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show Swift version
+        run: swift --version
+
+      - name: Build OLED.app and OLED.dmg
+        env:
+          BUILD_NUMBER: ${{ github.run_number }}
+        run: |
+          chmod +x scripts/build_app.sh
+          ./scripts/build_app.sh
+
+      - name: Publish OLED.dmg as the latest release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete latest --yes --cleanup-tag || true
+          gh release create latest dist/OLED.dmg \
+            --title "OLED – latest build (#${{ github.run_number }})" \
+            --notes "Download OLED.dmg, open it, and drag OLED into Applications." \
+            --latest
