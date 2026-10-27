@@ -112,7 +112,8 @@ struct OrbView: View {
                 let r = 150 * s
                 let a0 = start * Double.pi / 180
                 var arc = Path()
-                arc.move(to: CGPoint(x: r * cos(a0), y: r * sin(a0)))
+                let rd = Double(r)
+                arc.move(to: CGPoint(x: rd * Foundation.cos(a0), y: rd * Foundation.sin(a0)))
                 arc.addArc(center: .zero, radius: r, startAngle: .degrees(start), endAngle: .degrees(end), clockwise: false)
                 ctx.stroke(arc, with: .color(color(0x3FB8FF, 0.7, boost: b)),
                            style: StrokeStyle(lineWidth: 1.6 * s, lineCap: .round))
