@@ -326,7 +326,47 @@ enum Website {
         "disney plus": "https://www.disneyplus.com",
         "prime video": "https://www.primevideo.com",
         "iplayer": "https://www.bbc.co.uk/iplayer",
-        "bbc iplayer": "https://www.bbc.co.uk/iplayer"
+        "bbc iplayer": "https://www.bbc.co.uk/iplayer",
+        "bbc weather": "https://www.bbc.co.uk/weather",
+        "youtube music": "https://music.youtube.com",
+        "google drive": "https://drive.google.com",
+        "google docs": "https://docs.google.com",
+        "google translate": "https://translate.google.com",
+        "the guardian": "https://www.theguardian.com",
+        "guardian": "https://www.theguardian.com",
+        "sky news": "https://news.sky.com",
+        "sky sports": "https://www.skysports.com",
+        "itv": "https://www.itv.com",
+        "itvx": "https://www.itv.com",
+        "channel 4": "https://www.channel4.com",
+        "argos": "https://www.argos.co.uk",
+        "tesco": "https://www.tesco.com",
+        "asda": "https://www.asda.com",
+        "sainsburys": "https://www.sainsburys.co.uk",
+        "john lewis": "https://www.johnlewis.com",
+        "currys": "https://www.currys.co.uk",
+        "rightmove": "https://www.rightmove.co.uk",
+        "pinterest": "https://www.pinterest.com",
+        "snapchat": "https://www.snapchat.com",
+        "discord": "https://discord.com",
+        "roblox": "https://www.roblox.com",
+        "apple": "https://www.apple.com",
+        "microsoft": "https://www.microsoft.com",
+        "yahoo": "https://www.yahoo.com",
+        "bing": "https://www.bing.com",
+        "duckduckgo": "https://duckduckgo.com",
+        "paypal": "https://www.paypal.com",
+        "nhs": "https://www.nhs.uk",
+        "gov uk": "https://www.gov.uk",
+        "gov.uk": "https://www.gov.uk",
+        "premier league": "https://www.premierleague.com",
+        "espn": "https://www.espn.com",
+        "imdb": "https://www.imdb.com",
+        "deliveroo": "https://deliveroo.co.uk",
+        "just eat": "https://www.just-eat.co.uk",
+        "uber eats": "https://www.ubereats.com",
+        "booking": "https://www.booking.com",
+        "airbnb": "https://www.airbnb.co.uk"
     ]
 
     /// Turns spoken words like "youtube", "bbc dot co dot uk" or "apple.com" into a web address.
@@ -336,6 +376,7 @@ enum Website {
             .replacingOccurrences(of: " slash ", with: "/")
             .trimmingCharacters(in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: ",!?")))
         if let k = known[s] { return URL(string: k) }
+        if s.hasPrefix("the "), let k = known[String(s.dropFirst(4))] { return URL(string: k) }
         let compact = s.replacingOccurrences(of: " ", with: "")
         if let k = known[compact] { return URL(string: k) }
         if s.contains(".") {
@@ -344,11 +385,72 @@ enum Website {
             return URL(string: s)
         }
         guard !compact.isEmpty else { return nil }
-        // Any other site by name ("the guardian", "bbc weather", "argos"): jump straight to the top web result.
-        var parts = URLComponents(string: "https://duckduckgo.com/")!
-        parts.queryItems = [URLQueryItem(name: "q", value: "!ducky \(s)")]
         _ = force
-        return parts.url
+        // Any other site by name ("the guardian", "argos"): its real address is found when opening it.
+        var c = URLComponents()
+        c.scheme = lookupScheme
+        c.host = "site"
+        c.queryItems = [URLQueryItem(name: "name", value: s)]
+        return c.url
+    }
+
+    static let lookupScheme = "oled-lookup"
+
+    /// For a website given by name, finds its real address — e.g. "the guardian" → theguardian.com —
+    /// by checking which address actually exists and following it to the site's own address.
+    /// Gives back the URL and the exact text to type. If no site exists, it's a Google search.
+    static func resolve(_ url: URL, completion: @escaping (URL, String) -> Void) {
+        guard url.scheme == lookupScheme,
+              let name = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first?.value else {
+            var typed = url.absoluteString
+            for scheme in ["https://", "http://"] where typed.hasPrefix(scheme) { typed.removeFirst(scheme.count) }
+            if typed.hasSuffix("/") { typed.removeLast() }
+            completion(url, typed)
+            return
+        }
+        var words = name.lowercased()
+        for tail in [" website", " web site", " site", " homepage", " home page"] where words.hasSuffix(tail) {
+            words.removeLast(tail.count)
+        }
+        let compact = words.filter { $0.isLetter || $0.isNumber }
+        let noThe = words.hasPrefix("the ") ? String(words.dropFirst(4)).filter { $0.isLetter || $0.isNumber } : compact
+        let uk = Locale.current.region?.identifier == "GB"
+        let endings = uk ? ["co.uk", "com", "org.uk", "org", "net", "tv", "io"] : ["com", "co.uk", "org", "net", "tv", "io"]
+        var candidates: [String] = []
+        for base in [compact, noThe] where !base.isEmpty {
+            for e in endings {
+                let d = "\(base).\(e)"
+                if !candidates.contains(d) { candidates.append(d) }
+            }
+        }
+
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 4
+        let session = URLSession(configuration: config)
+
+        func tryNext(_ index: Int) {
+            guard index < candidates.count else {
+                // No website by that name: search for exactly what was said.
+                var g = URLComponents(string: "https://www.google.com/search")!
+                g.queryItems = [URLQueryItem(name: "q", value: name)]
+                DispatchQueue.main.async { completion(g.url!, name) }
+                return
+            }
+            guard let probe = URL(string: "https://\(candidates[index])") else { tryNext(index + 1); return }
+            var request = URLRequest(url: probe)
+            request.httpMethod = "GET"
+            request.setValue("Mozilla/5.0 (Macintosh) OLED", forHTTPHeaderField: "User-Agent")
+            session.dataTask(with: request) { _, response, error in
+                guard error == nil, let http = response as? HTTPURLResponse, http.statusCode < 500,
+                      let final = http.url ?? Optional(probe), let host = final.host else {
+                    tryNext(index + 1); return
+                }
+                // Type the site's own address (after any redirect), e.g. www.theguardian.com
+                let siteURL = URL(string: "https://\(host)") ?? probe
+                DispatchQueue.main.async { completion(siteURL, host) }
+            }.resume()
+        }
+        tryNext(0)
     }
 
     /// True for well-known websites ("youtube", "gmail", "bbc news"…).
@@ -457,7 +559,10 @@ final class KeyboardController {
     /// Opens the browser, makes sure it's really in front, then presses Command-T, types the address and
     /// presses Return — exactly like doing it on the keyboard. If the browser can't be brought to the
     /// front, the website is opened in it directly instead, so you always end up on the site.
-    func typeAddress(_ address: String, url: URL, in browser: Browser) {
+    /// Where to open a website: a new tab, a new window, or the current (empty) tab.
+    enum Place { case newTab, newWindow, current }
+
+    func typeAddress(_ address: String, url: URL, in browser: Browser, place: Place = .current) {
         guard let appURL = browser.appURL else { return }
         let alreadyRunning = NSRunningApplication.runningApplications(withBundleIdentifier: browser.bundleID)
             .contains { !$0.isTerminated }
@@ -476,20 +581,42 @@ final class KeyboardController {
             // A freshly opened browser needs a moment for its window to be ready.
             let settle = alreadyRunning ? 0.35 : 1.5
             DispatchQueue.main.asyncAfter(deadline: .now() + settle) {
-                // No shortcuts: click straight into the browser's own address bar and clear it.
-                guard Self.isFront(browser), AddressBar.focus(in: browser) else {
-                    _ = browser.open(url) // couldn't reach the address bar: open the site directly
-                    return
+                guard Self.isFront(browser) else { _ = browser.open(url); return }
+                // You asked for a new tab or window: open it first (that's the only time OLED uses a shortcut).
+                var wait = 0.0
+                switch place {
+                case .newWindow: KeySender.combo(45, .maskCommand); wait = 1.0   // Command-N
+                case .newTab: KeySender.combo(17, .maskCommand); wait = 0.8      // Command-T
+                case .current: break
                 }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-                    guard Self.isFront(browser) else { _ = browser.open(url); return }
-                    DispatchQueue.global(qos: .userInitiated).async {
-                        Self.typeNow(address)
-                        usleep(200_000)
-                        DispatchQueue.main.async { Self.post(key: 36, flags: []) } // Return, to go to the site
+                DispatchQueue.main.asyncAfter(deadline: .now() + wait) {
+                    // Click straight into the address bar (no shortcut) and clear it.
+                    guard Self.isFront(browser), AddressBar.focus(in: browser) else {
+                        _ = browser.open(url) // couldn't reach the address bar: open the site directly
+                        return
+                    }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                        guard Self.isFront(browser) else { _ = browser.open(url); return }
+                        DispatchQueue.global(qos: .userInitiated).async {
+                            Self.typeNow(address)
+                            usleep(200_000)
+                            DispatchQueue.main.async {
+                                Self.post(key: 36, flags: []) // Return, to go to the site
+                                Self.makeSureItOpened(url, in: browser)
+                            }
+                        }
                     }
                 }
             }
+        }
+    }
+
+    /// After pressing Return the page should load and the cursor leaves the address bar. If it's still
+    /// sitting in the address bar, press Return once more so the website really opens.
+    private static func makeSureItOpened(_ url: URL, in browser: Browser) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+            guard isFront(browser), AddressBar.isEditing(in: browser) else { return }
+            post(key: 36, flags: [])
         }
     }
 
@@ -545,14 +672,43 @@ final class KeyboardController {
 /// Finds Safari's or Firefox's address bar through Accessibility and puts the cursor in it, empty,
 /// the same as clicking on it — without using any keyboard shortcut.
 enum AddressBar {
-    static func focus(in browser: Browser) -> Bool {
-        guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: browser.bundleID).first else { return false }
+    private static func field(in browser: Browser) -> AXUIElement? {
+        guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: browser.bundleID)
+            .first(where: { !$0.isTerminated }) else { return nil }
         let axApp = AXUIElementCreateApplication(app.processIdentifier)
-        var windowRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(axApp, kAXFocusedWindowAttribute as CFString, &windowRef) == .success,
-              let windowRef, CFGetTypeID(windowRef) == AXUIElementGetTypeID() else { return false }
-        let window = windowRef as! AXUIElement
-        guard let field = findField(from: window) else { return false }
+        for attr in [kAXFocusedWindowAttribute, kAXMainWindowAttribute] {
+            var windowRef: CFTypeRef?
+            if AXUIElementCopyAttributeValue(axApp, attr as CFString, &windowRef) == .success,
+               let windowRef, CFGetTypeID(windowRef) == AXUIElementGetTypeID(),
+               let found = findField(from: windowRef as! AXUIElement) {
+                return found
+            }
+        }
+        return nil
+    }
+
+    /// True when the browser's current tab already shows a website (so typing there would replace it).
+    /// False when there's no window, or the tab is empty / a start page.
+    static func currentTabHasWebsite(in browser: Browser) -> Bool {
+        guard AccessibilityPermission.isGranted, let field = field(in: browser) else { return false }
+        var value: CFTypeRef?
+        AXUIElementCopyAttributeValue(field, kAXValueAttribute as CFString, &value)
+        let text = ((value as? String) ?? "").trimmingCharacters(in: .whitespaces).lowercased()
+        let empty = ["", "favorites", "favourites", "start page", "about:blank", "about:newtab", "about:home",
+                     "search or enter website name", "search with google or enter address", "top sites"]
+        return !empty.contains(text) && !text.hasPrefix("about:")
+    }
+
+    /// True while the cursor is still in the address bar (i.e. the website hasn't been opened yet).
+    static func isEditing(in browser: Browser) -> Bool {
+        guard let field = field(in: browser) else { return false }
+        var focused: CFTypeRef?
+        AXUIElementCopyAttributeValue(field, kAXFocusedAttribute as CFString, &focused)
+        return (focused as? Bool) ?? false
+    }
+
+    static func focus(in browser: Browser) -> Bool {
+        guard let field = field(in: browser) else { return false }
 
         AXUIElementSetAttributeValue(field, kAXFocusedAttribute as CFString, kCFBooleanTrue)
         // Empty it so the new address replaces the old one rather than being added to it.

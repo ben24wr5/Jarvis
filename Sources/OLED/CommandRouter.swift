@@ -15,6 +15,7 @@ final class CommandRouter {
     private var pendingURL: URL?
     private var pendingName = ""
     private var pendingTyped: String?
+    private var pendingPlace: KeyboardController.Place?
     private var browserAsks = 0
     private var pendingWeatherTomorrow: Bool?
     private var pendingPower: PowerAction?
@@ -154,23 +155,8 @@ final class CommandRouter {
         let politeStripped = Self.fromCommandVerb(text)
 
         // 1. Answering "Firefox or Safari?"
-        if let url = pendingURL {
-            if text.contains("firefox") || text.contains("fire fox") || text.contains("fox") {
-                reply(openSite(url, name: pendingName, in: .firefox, typed: pendingTyped)); return
-            }
-            if text.contains("safari") || text.contains("sa far") || text.contains("savari") {
-                reply(openSite(url, name: pendingName, in: .safari, typed: pendingTyped)); return
-            }
-            if Self.cancelWords.contains(where: { text.contains($0) }) {
-                clearPending()
-                reply(Reply(text: "Okay, I won't open it.", expectsAnswer: false)); return
-            }
-            browserAsks += 1
-            if browserAsks < 3 {
-                reply(Reply(text: "Sorry, Firefox or Safari?", expectsAnswer: true)); return
-            }
-            clearPending()
-            reply(Reply(text: "Never mind, I'll leave it for now.", expectsAnswer: false)); return
+        if pendingURL != nil {
+            reply(answerWeb(text)); return
         }
 
         // 1a. Answering "Are you sure you want me to shut down / restart?"
@@ -199,6 +185,14 @@ final class CommandRouter {
         // 2. Cancel
         if Self.cancelWords.contains(politeStripped) {
             reply(Reply(text: "Okay.", expectsAnswer: false)); return
+        }
+
+        // 1c. Website requests that mention a browser or a new tab/window:
+        //     "open a new window in Safari and type youtube.com and then enter"
+        if Self.isCommand(politeStripped) || politeStripped.hasPrefix("new ") || politeStripped.hasPrefix("a new ")
+            || politeStripped.hasPrefix("safari") || politeStripped.hasPrefix("firefox"),
+           let plan = Self.parseWeb(politeStripped) {
+            reply(runWeb(plan)); return
         }
 
         // 2. Keyboard shortcuts — only when you ask for them by name.
@@ -294,7 +288,7 @@ final class CommandRouter {
     ]
 
     /// Opens a browser and searches: types the words into the address bar like you would.
-    private func search(_ query: String, in browser: Browser?) -> Reply {
+    private func search(_ query: String, in browser: Browser?, place: KeyboardController.Place? = nil) -> Reply {
         guard !query.isEmpty else { return Reply(text: "What should I search for?", expectsAnswer: false) }
         var q = query
         var url: URL?
@@ -311,13 +305,7 @@ final class CommandRouter {
             url = c.url
         }
         guard let url else { return Reply(text: "What should I search for?", expectsAnswer: false) }
-        let name = "a search for \(q)"
-        if let browser { return openSite(url, name: name, in: browser, typed: typed) }
-        pendingURL = url
-        pendingName = name
-        pendingTyped = typed
-        browserAsks = 0
-        return Reply(text: "Do you want me to search in Firefox or Safari?", expectsAnswer: true)
+        return startWeb(url, name: "a search for \(q)", typed: typed, browser: browser, place: place)
     }
 
     private func open(_ target: inout String, browser preset: Browser? = nil, forceWeb presetWeb: Bool = false) -> Reply {
@@ -378,37 +366,217 @@ final class CommandRouter {
         guard let url = Website.url(from: target, force: true) else {
             return Reply(text: "What would you like me to open?", expectsAnswer: false)
         }
-        let name = Website.displayName(for: target)
-        if let chosen { return openSite(url, name: name, in: chosen) }
-
-        pendingURL = url
-        pendingName = name
-        pendingTyped = nil
-        browserAsks = 0
-        return Reply(text: "Do you want me to open it in Firefox or Safari?", expectsAnswer: true)
+        return startWeb(url, name: Website.displayName(for: target), typed: nil, browser: chosen, place: nil)
     }
 
-    private func openSite(_ url: URL, name: String, in browser: Browser, typed: String? = nil) -> Reply {
+    /// Opens a website in Safari or Firefox.
+    /// `place`: new tab / new window when you asked for one; nil means "you didn't say" — then OLED
+    /// uses the current tab only if it's empty, and otherwise asks "new tab or new window?".
+    private func openSite(_ url: URL, name: String, in browser: Browser, typed: String? = nil,
+                          place: KeyboardController.Place? = nil) -> Reply {
         clearPending()
         guard browser.appURL != nil else {
             return Reply(text: "\(browser.rawValue) doesn't seem to be installed on this Mac.", expectsAnswer: false)
         }
-        if AccessibilityPermission.isGranted {
-            // Type the address (or the search words) into the browser for you.
-            var address = typed ?? url.absoluteString
-            for scheme in ["https://", "http://"] where address.hasPrefix(scheme) { address.removeFirst(scheme.count) }
-            keyboard.typeAddress(address, url: url, in: browser)
-        } else {
-            _ = browser.open(url)
+        let finalPlace = place ?? .current
+        let keyboard = self.keyboard
+        let go: (URL, String) -> Void = { siteURL, address in
+            if AccessibilityPermission.isGranted {
+                // Type the exact address (or the search words) into the browser for you.
+                keyboard.typeAddress(address, url: siteURL, in: browser, place: finalPlace)
+            } else {
+                _ = browser.open(siteURL)
+            }
         }
-        return Reply(text: "Opening \(name) in \(browser.rawValue).", expectsAnswer: false)
+        if let typed {
+            go(url, typed)
+        } else {
+            // Turn a site name into its real address first (e.g. "the guardian" → www.theguardian.com).
+            Website.resolve(url, completion: go)
+        }
+        let placeText = finalPlace == .newTab ? " in a new tab" : (finalPlace == .newWindow ? " in a new window" : "")
+        return Reply(text: "Opening \(name) in \(browser.rawValue)\(placeText).", expectsAnswer: false)
     }
 
     private func clearPending() {
         pendingURL = nil
         pendingName = ""
         pendingTyped = nil
+        pendingPlace = nil
+        pendingBrowser = nil
+        webStage = .browser
         browserAsks = 0
+    }
+
+    // MARK: The website conversation
+    //  1. "Safari or Firefox?"  2. "Already a tab open with another website?" yes → new tab
+    //  3. (if no) "Open a new window in Safari?" yes → new window, no → nothing is typed.
+    //  Anything already said in the command (browser, new tab/window) skips that question.
+
+    private enum WebStage { case browser, existingTab, newWindow }
+    private var webStage: WebStage = .browser
+    private var pendingBrowser: Browser?
+
+    private func startWeb(_ url: URL, name: String, typed: String?, browser: Browser?, place: KeyboardController.Place?) -> Reply {
+        clearPending()
+        pendingURL = url
+        pendingName = name
+        pendingTyped = typed
+        pendingPlace = place
+        pendingBrowser = browser
+        return nextWebStep()
+    }
+
+    private func nextWebStep() -> Reply {
+        guard let url = pendingURL else { return Reply(text: "Which website would you like?", expectsAnswer: false) }
+        guard let browser = pendingBrowser else {
+            webStage = .browser
+            return Reply(text: "Do you want me to open it in Safari or Firefox?", expectsAnswer: true)
+        }
+        if let place = pendingPlace {
+            return openSite(url, name: pendingName, in: browser, typed: pendingTyped, place: place)
+        }
+        webStage = .existingTab
+        return Reply(text: "Do you already have a tab open with another website?", expectsAnswer: true)
+    }
+
+    private static func isYes(_ t: String) -> Bool {
+        let s = " " + t + " "
+        return [" yes ", " yeah ", " yep ", " yup ", " sure ", " ok ", " okay ", " please ", " correct ", " i do ",
+                " i have ", " do it ", " go ahead ", " affirmative ", " of course ", " yes please "].contains { s.contains($0) }
+    }
+
+    private static func isNo(_ t: String) -> Bool {
+        let s = " " + t + " "
+        return [" no ", " nope ", " nah ", " don't ", " dont ", " do not ", " not ", " i haven't ", " i don't ",
+                " no thanks ", " negative "].contains { s.contains($0) }
+    }
+
+    /// Handles your answer to whichever website question OLED just asked.
+    private func answerWeb(_ text: String) -> Reply {
+        if ["cancel", "stop", "never mind", "nevermind", "forget it", "forget about it"].contains(where: { text.contains($0) }) {
+            clearPending()
+            return Reply(text: "Okay, I won't open anything.", expectsAnswer: false)
+        }
+        // You can always say it straight out: "a new window", "a new tab".
+        if let place = Self.placeMentioned(in: text), place != .current { pendingPlace = place }
+
+        switch webStage {
+        case .browser:
+            if text.contains("firefox") || text.contains("fire fox") || text.contains("fox") { pendingBrowser = .firefox }
+            else if text.contains("safari") || text.contains("sa far") || text.contains("savari") { pendingBrowser = .safari }
+            else {
+                browserAsks += 1
+                if browserAsks >= 3 { clearPending(); return Reply(text: "Never mind, I'll leave it for now.", expectsAnswer: false) }
+                return Reply(text: "Sorry, Safari or Firefox?", expectsAnswer: true)
+            }
+            browserAsks = 0
+            return nextWebStep()
+
+        case .existingTab:
+            if pendingPlace != nil { return nextWebStep() }
+            if Self.isNo(text) {
+                webStage = .newWindow
+                let b = pendingBrowser?.rawValue ?? "the browser"
+                return Reply(text: "Do you want me to open a new window in \(b)?", expectsAnswer: true)
+            }
+            if Self.isYes(text) {
+                pendingPlace = .newTab
+                return nextWebStep()
+            }
+            return Reply(text: "Sorry, do you already have a tab open with another website? Yes or no?", expectsAnswer: true)
+
+        case .newWindow:
+            if pendingPlace == .newTab { return nextWebStep() }
+            if Self.isNo(text) {
+                clearPending()
+                return Reply(text: "Okay, I won't type anything.", expectsAnswer: false)
+            }
+            if Self.isYes(text) || pendingPlace == .newWindow {
+                pendingPlace = .newWindow
+                return nextWebStep()
+            }
+            let b = pendingBrowser?.rawValue ?? "the browser"
+            return Reply(text: "Sorry, do you want me to open a new window in \(b)? Yes or no?", expectsAnswer: true)
+        }
+    }
+
+    /// "new window" / "new tab" / "same tab" in what you said, if any.
+    private static func placeMentioned(in t: String) -> KeyboardController.Place? {
+        let s = " " + t + " "
+        if s.contains(" new window") || s.contains(" another window") { return .newWindow }
+        if s.contains(" new tab") || s.contains(" another tab") || s.contains(" new page") { return .newTab }
+        if s.contains(" same tab") || s.contains(" this tab") || s.contains(" current tab") || s.contains(" same page")
+            || s.contains(" same one") || s.contains(" this one") || s.contains(" here ") { return .current }
+        return nil
+    }
+
+    // MARK: Understanding website requests
+
+    struct WebPlan {
+        var browser: Browser?
+        var place: KeyboardController.Place?
+        var site: String?
+        var search: String?
+    }
+
+    private static func replacing(_ s: String, _ pattern: String) -> String {
+        guard let re = try? NSRegularExpression(pattern: pattern) else { return s }
+        return re.stringByReplacingMatches(in: s, range: NSRange(s.startIndex..., in: s), withTemplate: " ")
+    }
+
+    /// Splits a sentence like "open a new window in Safari and type youtube.com and then enter" into its
+    /// parts: browser = Safari, place = new window, site = youtube.com. Nil if it isn't a website request
+    /// that mentions a browser or a new tab/window.
+    static func parseWeb(_ t: String) -> WebPlan? {
+        var s = " " + t + " "
+        var plan = WebPlan()
+        if s.range(of: #" (fire fox|firefox)('s)? "#, options: .regularExpression) != nil { plan.browser = .firefox }
+        else if s.range(of: #" safari('s)? "#, options: .regularExpression) != nil { plan.browser = .safari }
+        if s.range(of: #" new windows? "#, options: .regularExpression) != nil { plan.place = .newWindow }
+        else if s.range(of: #" new (tabs?|page) "#, options: .regularExpression) != nil { plan.place = .newTab }
+        guard plan.browser != nil || plan.place != nil else { return nil }
+
+        // Remove "and then press enter", window/tab words and browser words — what's left is the website.
+        s = replacing(s, #" (and )?(then )?(press |hit |click )?(enter|return)( key)? *$"#)
+        s = replacing(s, #" please "#)
+        s = replacing(s, #" (in|on|with|using|into) (a |an |another )?new (windows?|tabs?|page) "#)
+        s = replacing(s, #" (open|launch|start|create|make)?( up)?( me)? ?(a |an |another )?new (windows?|tabs?|page)( (in|on|of|for) (safari|firefox|fire fox))? "#)
+        s = replacing(s, #" (in|on|using|with|through) (safari|firefox|fire fox)('s)? "#)
+        s = replacing(s, #" (open|launch|start|use|go to|go on)( up)? (safari|firefox|fire fox) "#)
+        s = replacing(s, #" (safari|firefox|fire fox)('s)? "#)
+        s = s.split(separator: " ").joined(separator: " ")
+
+        var changed = true
+        while changed {
+            changed = false
+            for lead in ["and ", "then ", "go to ", "go on ", "type in ", "type ", "put in ", "enter ", "visit ", "open up ",
+                         "open ", "navigate to ", "take me to ", "load ", "bring up ", "show me ", "to ", "the website ",
+                         "website ", "the site "] where s.hasPrefix(lead) {
+                s.removeFirst(lead.count)
+                changed = true
+            }
+        }
+        for tail in [" and", " then", " website", " site", " in it"] where s.hasSuffix(tail) { s.removeLast(tail.count) }
+        for verb in ["search for ", "search ", "google ", "look for "] where s.hasPrefix(verb) {
+            plan.search = String(s.dropFirst(verb.count))
+            return plan
+        }
+        // A web address said in the sentence wins: "…and type youtube.com and then enter" → youtube.com
+        if let r = s.range(of: #"[a-z0-9-]+(\.[a-z0-9-]+)+(/\S*)?"#, options: .regularExpression) {
+            plan.site = String(s[r])
+        } else if !s.trimmingCharacters(in: .whitespaces).isEmpty {
+            plan.site = s.trimmingCharacters(in: .whitespaces)
+        }
+        return plan.site == nil && plan.search == nil ? nil : plan
+    }
+
+    private func runWeb(_ plan: WebPlan) -> Reply {
+        if let query = plan.search { return search(query, in: plan.browser, place: plan.place) }
+        guard let site = plan.site, let url = Website.url(from: site, force: true) else {
+            return Reply(text: "Which website would you like?", expectsAnswer: false)
+        }
+        return startWeb(url, name: Website.displayName(for: site), typed: nil, browser: plan.browser, place: plan.place)
     }
 
     private func needAccessibility() -> Reply {
