@@ -144,7 +144,7 @@ final class CommandRouter {
         (["minimise", "minimize", "minimise window", "minimize window", "minimise this", "minimize this"], 46, .maskCommand, "Minimised.")
     ]
 
-    private static let cancelWords =["cancel", "stop", "never mind", "nevermind", "forget it", "nothing", "no thanks"]
+    private static let cancelWords = ["cancel", "stop", "never mind", "nevermind", "forget it", "nothing", "no thanks"]
     private static let openVerbs = ["open up ", "open ", "launch ", "start up ", "start ", "run ", "go to ", "go on ", "visit ",
                                     "take me to ", "navigate to ", "show me ", "load ", "bring up "]
 
