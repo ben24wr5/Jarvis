@@ -55,7 +55,10 @@ struct Palette: Identifiable, Equatable {
                 text: 0xE9E0F5, muted: 0xA08CB8),
         Palette(id: "emerald", name: "Emerald", bgCenter: 0x04261A, bgMid: 0x02120C, bgEdge: 0x010604,
                 primary: 0x10B981, secondary: 0x34D399, tertiary: 0x059669, light: 0xD1FAE5, deep: 0x064E3B,
-                text: 0xA7D9C4, muted: 0x6B9F89)
+                text: 0xA7D9C4, muted: 0x6B9F89),
+        Palette(id: "emeraldgoldsilver", name: "Emerald, Gold & Silver", bgCenter: 0x04261A, bgMid: 0x02120C, bgEdge: 0x010604,
+                primary: 0x10B981, secondary: 0xF2B632, tertiary: 0xC0C7CF, light: 0xF1F4F7, deep: 0x064E3B,
+                text: 0xD6DCE2, muted: 0x8FA39A)
     ]
 }
 
