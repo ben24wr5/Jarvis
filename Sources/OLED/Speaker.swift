@@ -71,6 +71,7 @@ final class Speaker: NSObject, AVSpeechSynthesizerDelegate {
         let current = session
         self.completion = completion
         started = false
+        usingSay = false
         let spoken = Self.spokenForm(of: text)
 
         guard synthWorks else {
@@ -97,6 +98,7 @@ final class Speaker: NSObject, AVSpeechSynthesizerDelegate {
     }
 
     private func speakWithSay(_ text: String, session current: Int) {
+        usingSay = true
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/say")
         var args: [String] = []
@@ -131,6 +133,29 @@ final class Speaker: NSObject, AVSpeechSynthesizerDelegate {
         guard session == current, let done = completion else { return }
         completion = nil
         done()
+    }
+
+    // MARK: Live level for the orb
+
+    private var lastWord = Date.distantPast
+    private var usingSay = false
+
+    /// How loud OLED is right now (0…1): a burst on every word that fades, so the orb moves with the voice.
+    var voiceLevel: Double {
+        guard completion != nil else { return 0 }
+        let now = Date()
+        if usingSay {
+            // `say` gives no word timing: imitate a natural speech rhythm.
+            let t = now.timeIntervalSinceReferenceDate
+            return 0.45 + 0.35 * abs(Foundation.sin(t * 7.3)) * (0.6 + 0.4 * Foundation.sin(t * 2.1))
+        }
+        let since = now.timeIntervalSince(lastWord)
+        guard since < 1.5 else { return started ? 0.15 : 0 }
+        return 0.25 + 0.75 * Foundation.exp(-since * 5)
+    }
+
+    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, willSpeakRangeOfSpeechString characterRange: NSRange, utterance: AVSpeechUtterance) {
+        DispatchQueue.main.async { self.lastWord = Date() }
     }
 
     func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didStart utterance: AVSpeechUtterance) {

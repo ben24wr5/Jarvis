@@ -4,19 +4,36 @@ import SwiftUI
 final class OrbClock {
     private var last: Date?
     var p1 = 0.0, p2 = 0.0, p3 = 0.0, t = 0.0
+    /// Smoothed voice level, 0…1 — rises fast, falls gently, so the orb "breathes" with speech.
+    var level = 0.0
 
-    func advance(to date: Date, speeds: (Double, Double, Double)) {
+    struct Spark { var angle: Double; var radius: Double; var speed: Double; var size: Double; var phase: Double }
+    let sparks: [Spark] = (0..<160).map { _ in
+        Spark(angle: Double.random(in: 0..<(2 * .pi)),
+              radius: Double.random(in: 120...205),
+              speed: Double.random(in: -0.5...0.5),
+              size: Double.random(in: 0.8...2.4),
+              phase: Double.random(in: 0..<(2 * .pi)))
+    }
+    let rays: [Double] = (0..<18).map { _ in Double.random(in: 0..<(2 * .pi)) }
+
+    func advance(to date: Date, speeds: (Double, Double, Double), target: Double) {
         let dt = min(max(date.timeIntervalSince(last ?? date), 0), 0.1)
         last = date
-        p1 += dt * speeds.0
-        p2 += dt * speeds.1
-        p3 += dt * speeds.2
+        let boost = 1 + 2.5 * level
+        p1 += dt * speeds.0 * boost
+        p2 += dt * speeds.1 * boost
+        p3 += dt * speeds.2 * boost
         t += dt
+        let rate = target > level ? 18.0 : 4.0
+        level += (target - level) * min(1, dt * rate)
     }
 }
 
 struct OrbView: View {
     var stage: AppState.Stage
+    /// Live loudness (0…1) of whoever is talking — you while listening, OLED while speaking.
+    var voiceLevel: () -> Double = { 0 }
     @State private var clock = OrbClock()
 
     private struct Look {
@@ -47,7 +64,11 @@ struct OrbView: View {
         TimelineView(.animation) { timeline in
             Canvas { context, size in
                 let look = self.look
-                clock.advance(to: timeline.date, speeds: look.speeds)
+                let raw = max(0, min(1, voiceLevel()))
+                // Asleep it still reacts a little, so you can see it hearing you; busy working it stays steady.
+                let target = stage == .working ? 0 : (stage == .asleep ? raw * 0.5 : raw)
+                clock.advance(to: timeline.date, speeds: look.speeds, target: target)
+                drawVoice(in: &context, size: size)
                 draw(in: &context, size: size, look: look)
             }
         }
@@ -60,10 +81,46 @@ struct OrbView: View {
         Color(hex: hex, opacity: min(1, opacity * boost))
     }
 
-    private func draw(in context: inout GraphicsContext, size: CGSize, look: Look) {
+    /// Sparks and light rays that burst outward with the voice.
+    private func drawVoice(in context: inout GraphicsContext, size: CGSize) {
+        let lv = clock.level
         let s = min(size.width, size.height) / 420
         let c = CGPoint(x: size.width / 2, y: size.height / 2)
-        let b = look.brightness
+        let t = clock.t
+        let alive = 0.25 + 0.75 * lv // a faint spark field is always there; the voice brings it to life
+
+        // Sparks
+        for sp in clock.sparks {
+            let a = sp.angle + t * sp.speed * (1 + 3 * lv)
+            let wobble = 6 * sin(t * 2 + sp.phase)
+            let r = (sp.radius + wobble + 55 * lv * (0.6 + 0.4 * sin(t * 9 + sp.phase))) * s
+            let x = c.x + CGFloat(r * Foundation.cos(a)), y = c.y + CGFloat(r * Foundation.sin(a))
+            let twinkle = 0.5 + 0.5 * sin(t * 3 + sp.phase * 3)
+            let d = sp.size * s * (1 + lv)
+            context.fill(Path(ellipseIn: CGRect(x: x - d / 2, y: y - d / 2, width: d, height: d)),
+                         with: .color(Color(hex: 0x8FE2FF, opacity: min(1, alive * (0.35 + 0.55 * twinkle)))))
+        }
+
+        // Rays, only when there's a voice
+        guard lv > 0.04 else { return }
+        var ctx = context
+        ctx.addFilter(.shadow(color: Color(hex: 0x2FB4FF), radius: 6 * s))
+        for (i, angle) in clock.rays.enumerated() {
+            let a = angle + t * 0.4 * (i % 2 == 0 ? 1 : -1)
+            let flicker = 0.5 + 0.5 * sin(t * 13 + Double(i) * 1.7)
+            let inner = 130 * s, outer = (150 + 90 * lv * flicker) * s
+            var ray = Path()
+            ray.move(to: CGPoint(x: c.x + CGFloat(inner * Foundation.cos(a)), y: c.y + CGFloat(inner * Foundation.sin(a))))
+            ray.addLine(to: CGPoint(x: c.x + CGFloat(outer * Foundation.cos(a)), y: c.y + CGFloat(outer * Foundation.sin(a))))
+            ctx.stroke(ray, with: .color(Color(hex: 0x7FD8FF, opacity: min(1, lv * flicker * 1.2))),
+                       style: StrokeStyle(lineWidth: 1.4 * s, lineCap: .round))
+        }
+    }
+
+    private func draw(in context: inout GraphicsContext, size: CGSize, look: Look) {
+        let s = min(size.width, size.height) / 420 * (1 + 0.08 * clock.level)
+        let c = CGPoint(x: size.width / 2, y: size.height / 2)
+        let b = look.brightness * (1 + 0.5 * clock.level)
         let t = clock.t
 
         func circle(_ r: Double) -> Path {

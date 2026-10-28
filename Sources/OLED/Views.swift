@@ -13,7 +13,7 @@ struct MainView: View {
                 TitleView()
                     .padding(.top, max(48, geo.size.height * 0.1))
                 Spacer(minLength: 20)
-                OrbView(stage: app.stage)
+                OrbView(stage: app.stage, voiceLevel: { [weak app] in app?.voiceLevel ?? 0 })
                     .frame(width: orbSize, height: orbSize)
                     .contentShape(Circle())
                     .onTapGesture { app.orbTapped() }

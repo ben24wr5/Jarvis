@@ -227,6 +227,7 @@ final class SpeechListener {
         task?.cancel(); task = nil
         request?.endAudio(); request = nil
         cleanUpAudio()
+        micLevel = 0
     }
 
     private func cleanUpAudio() {

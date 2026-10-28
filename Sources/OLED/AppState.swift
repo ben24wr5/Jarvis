@@ -128,6 +128,14 @@ final class AppState: ObservableObject {
     // MARK: Interaction
 
     /// Clicking the orb works just like saying "OLED".
+    /// Loudness for the orb: OLED's own voice while speaking, otherwise your voice from the microphone.
+    var voiceLevel: Double {
+        if stage == .speaking { return speaker.voiceLevel }
+        // Microphone peaks are small numbers; scale so normal talking fills the range.
+        let mic = Double(listener.micLevel)
+        return min(1, max(0, (mic - 0.01) * 6))
+    }
+
     /// True while OLED is waiting for something the user started (a click, its name, or a question it asked).
     private var expectingSpeech = false
     private var failureAnnounced = false
