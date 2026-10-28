@@ -179,8 +179,6 @@ struct SetupView: View {
 
 struct SettingsView: View {
     @EnvironmentObject var app: AppState
-    @State private var apiKey = KeyStore.apiKey ?? ""
-    @State private var saved = false
     @State private var robot = UserDefaults.standard.object(forKey: Speaker.robotKey) as? Double ?? 0.5
     @State private var voiceID = Speaker.selectedVoice?.identifier ?? ""
     @State private var homeTown = Weather.homeTown ?? ""
@@ -241,19 +239,6 @@ struct SettingsView: View {
                     .foregroundColor(.secondary)
             }
 
-            Section("Conversation") {
-                SecureField("Claude API key", text: $apiKey)
-                HStack {
-                    Button("Save key") {
-                        KeyStore.apiKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-                        saved = true
-                    }
-                    if saved { Text("Saved").foregroundColor(.secondary) }
-                }
-                Text("Needed only for chatting. Opening apps, websites and keyboard commands work without it.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
 
             Section("Weather") {
                 TextField("Home town or city", text: $homeTown)

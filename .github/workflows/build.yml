@@ -10,7 +10,8 @@ permissions:
 
 jobs:
   build:
-    runs-on: macos-15
+    # macOS 26 tools so OLED can use Apple's free on-device AI (Apple Intelligence) where available.
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
 

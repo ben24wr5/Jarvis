@@ -4,7 +4,8 @@ A native macOS voice assistant (Swift + SwiftUI). Say **“OLED”** (O-L-E-D) o
 
 ## What it does
 
-- **Chat** – ask anything and OLED answers out loud (needs a Claude API key in Settings).
+- **Ask anything** – OLED answers out loud with no API key: Apple's on-device AI when the Mac has
+  Apple Intelligence, otherwise free Wikipedia and dictionary lookups, plus built-in maths and small talk.
 - **Open apps** – “OLED, open Spotify”.
 - **Open websites** – “OLED, open YouTube” → OLED asks “Firefox or Safari?” → answer and it opens there.
   You can also say “open YouTube in Firefox”.
@@ -21,7 +22,6 @@ A native macOS voice assistant (Swift + SwiftUI). Say **“OLED”** (O-L-E-D) o
 ## Settings (Command-comma)
 
 - British voice choice and a Human ↔ Robotic slider
-- Claude API key for conversation
 - Re-run setup / open Accessibility settings
 
 ## App icon

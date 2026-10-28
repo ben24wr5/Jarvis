@@ -40,6 +40,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        LegacyKeyCleanup.run() // OLED no longer uses an API key; remove any saved by older versions
         // Start OLED automatically when the Mac turns on (on by default; switch in Settings).
         if UserDefaults.standard.object(forKey: LaunchAtLogin.key) == nil {
             UserDefaults.standard.set(true, forKey: LaunchAtLogin.key)

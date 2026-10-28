@@ -91,7 +91,7 @@ final class CommandRouter {
             return true
         }
 
-        if words.contains("joke"), KeyStore.apiKey == nil {
+        if words.contains("joke") {
             reply(Reply(text: Self.jokes.randomElement()!, expectsAnswer: true))
             return true
         }

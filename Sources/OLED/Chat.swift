@@ -1,115 +1,250 @@
 import Foundation
 import Security
+import ObjCSupport
+#if canImport(FoundationModels)
+import FoundationModels
+#endif
 
-/// Stores the Claude API key in the macOS Keychain.
-enum KeyStore {
-    private static let service = "OLED"
-    private static let account = "anthropic-api-key"
-
-    static var apiKey: String? {
-        get {
-            let query: [String: Any] = [
-                kSecClass as String: kSecClassGenericPassword,
-                kSecAttrService as String: service,
-                kSecAttrAccount as String: account,
-                kSecReturnData as String: true,
-                kSecMatchLimit as String: kSecMatchLimitOne
-            ]
-            var item: CFTypeRef?
-            guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
-                  let data = item as? Data,
-                  let key = String(data: data, encoding: .utf8), !key.isEmpty else { return nil }
-            return key
-        }
-        set {
-            let base: [String: Any] = [
-                kSecClass as String: kSecClassGenericPassword,
-                kSecAttrService as String: service,
-                kSecAttrAccount as String: account
-            ]
-            SecItemDelete(base as CFDictionary)
-            guard let newValue, !newValue.isEmpty else { return }
-            var add = base
-            add[kSecValueData as String] = Data(newValue.utf8)
-            SecItemAdd(add as CFDictionary, nil)
-        }
+/// Removes any Claude API key saved by older versions of OLED. OLED no longer uses one.
+enum LegacyKeyCleanup {
+    static func run() {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: "OLED",
+            kSecAttrAccount as String: "anthropic-api-key"
+        ]
+        SecItemDelete(query as CFDictionary)
     }
 }
 
-/// Talks to Claude so OLED can hold a real conversation.
+/// Answers anything that isn't a Mac command — with no API key and nothing to pay for.
+/// 1. Small talk and maths, built in.
+/// 2. Apple's on-device AI (Apple Intelligence) when the Mac has it — free, private, offline.
+/// 3. Otherwise free lookups: Wikipedia for people, places and things; a free dictionary for meanings.
 final class ChatClient {
-    private var history: [[String: String]] = []
-    private let model = "claude-haiku-5-5"
-
-    private let systemPrompt = """
-    You are OLED, a voice assistant living on the user's Mac. Your name is always written OLED and \
-    always pronounced letter by letter, O-L-E-D. Never describe yourself in terms of screens or televisions. \
-    You speak with a calm, polite British manner, a little dry wit, and you address the user directly. \
-    Like Siri, you help with anything: answer general knowledge questions about people, places, history, science, \
-    films, cartoons, games and sport; tell jokes when asked; give advice, ideas, definitions, maths and conversions; \
-    and happily chat, say hello and say goodbye. If something depends on live information you can't know, \
-    such as today's news or scores, say so briefly and give the best general answer you can. \
-    Like Siri, you help with anything: general knowledge, people, places, history, science, films, cartoons, \
-    sport, maths, definitions, recommendations, jokes and casual chat. Greet the user warmly when they say hello \
-    and say goodbye when they leave. If you are unsure about something very recent, say so briefly. \
-    Everything you write is spoken aloud, so reply in plain conversational sentences: no lists, no markdown, \
-    no emoji, no links. Keep replies short, usually one to three sentences, unless the user asks for more. \
-    You can open apps, open websites and press keys on the Mac when the user asks with words like \
-    "open", "press" or "type"; if they ask how, tell them to say for example "OLED, open Safari".
+    static let instructions = """
+    You are OLED, a voice assistant on the user's Mac. Your name is always pronounced letter by letter, O-L-E-D. \
+    You speak with a calm, polite British manner and a little dry wit. Help with anything: general knowledge, \
+    people, places, history, science, films, cartoons, sport, maths, definitions, ideas and casual chat. \
+    Everything you say is spoken aloud, so reply in plain sentences with no lists, markdown, emoji or links. \
+    Keep replies short, one to three sentences, unless asked for more. If something is very recent and you \
+    can't know it, say so briefly.
     """
 
-    func reset() { history.removeAll() }
+    #if canImport(FoundationModels)
+    private var sessionStore: Any?
+    #endif
+
+    func reset() {
+        #if canImport(FoundationModels)
+        sessionStore = nil
+        #endif
+    }
 
     func reply(to message: String, completion: @escaping (String) -> Void) {
-        guard let key = KeyStore.apiKey else {
-            completion("To chat with me, add your Claude API key in OLED's Settings. You can open them with Command and comma.")
+        let done: (String) -> Void = { text in DispatchQueue.main.async { completion(text) } }
+        let lower = message.lowercased().trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
+
+        if let quick = Self.smallTalk(lower) { done(quick); return }
+        if let sum = Self.maths(lower) { done(sum); return }
+
+        askAppleAI(message) { answer in
+            if let answer { done(answer); return }
+            Self.lookUp(lower, done: done)
+        }
+    }
+
+    // MARK: Apple's on-device AI
+
+    private func askAppleAI(_ message: String, completion: @escaping (String?) -> Void) {
+        #if canImport(FoundationModels)
+        if #available(macOS 26.0, *) {
+            guard case .available = SystemLanguageModel.default.availability else { completion(nil); return }
+            let session: LanguageModelSession
+            if let existing = sessionStore as? LanguageModelSession {
+                session = existing
+            } else {
+                session = LanguageModelSession(instructions: Self.instructions)
+                sessionStore = session
+            }
+            Task {
+                do {
+                    let response = try await session.respond(to: message)
+                    let text = response.content.trimmingCharacters(in: .whitespacesAndNewlines)
+                    completion(text.isEmpty ? nil : text)
+                } catch {
+                    // e.g. conversation too long: start fresh next time, fall back to lookups now.
+                    await MainActor.run { self.sessionStore = nil }
+                    completion(nil)
+                }
+            }
             return
         }
-        history.append(["role": "user", "content": message])
-        if history.count > 20 { history.removeFirst(history.count - 20) }
-        while let first = history.first, first["role"] != "user" { history.removeFirst() }
+        #endif
+        completion(nil)
+    }
 
-        var request = URLRequest(url: URL(string: "https://api.anthropic.com/v1/messages")!)
-        request.httpMethod = "POST"
-        request.timeoutInterval = 30
-        request.setValue(key, forHTTPHeaderField: "x-api-key")
-        request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
-        request.setValue("application/json", forHTTPHeaderField: "content-type")
-        let body: [String: Any] = [
-            "model": model,
-            "max_tokens": 400,
-            "system": systemPrompt,
-            "messages": history
+    // MARK: Built-in answers
+
+    private static func smallTalk(_ t: String) -> String? {
+        let replies: [([String], [String])] = [
+            (["how are you", "how are you doing", "how's it going", "how is it going", "you alright", "are you ok", "how's your day", "how is your day"],
+             ["All systems running smoothly, thank you. How can I help?", "Very well, thanks for asking. What can I do for you?"]),
+            (["who are you", "what are you", "what's your name", "what is your name", "introduce yourself"],
+             ["I'm OLED, your Mac assistant. I can open apps and websites, use the keyboard, check the weather and answer questions."]),
+            (["what can you do", "help", "what do you do", "what can i say"],
+             ["I can open apps and websites, type and press keys, tell you the time and weather, tell jokes, answer questions, and shut down, restart, sleep or lock your Mac."]),
+            (["who made you", "who created you", "who built you"],
+             ["I was built for you, to run right here on your Mac."]),
+            (["i love you", "love you"],
+             ["That's very kind. I'm rather fond of you too."]),
+            (["you're good", "good job", "well done", "you're amazing", "you're the best", "nice"],
+             ["Thank you. I do try."]),
+            (["what's up", "whats up", "sup"],
+             ["Not much, just keeping your Mac company. What can I do for you?"]),
+            (["are you there", "you there"],
+             ["Always. What do you need?"])
         ]
-        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        for (phrases, answers) in replies where phrases.contains(t) {
+            return answers.randomElement()
+        }
+        return nil
+    }
 
-        URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
-            var text: String
-            var ok = false
-            if error != nil {
-                text = "I can't reach my brain right now. Please check your internet connection."
-            } else if let http = response as? HTTPURLResponse, http.statusCode == 401 {
-                text = "Your API key wasn't accepted. Please check it in Settings."
-            } else if let data,
-                      let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                      let content = json["content"] as? [[String: Any]] {
-                text = content.compactMap { $0["text"] as? String }.joined(separator: " ")
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                ok = !text.isEmpty
-                if text.isEmpty { text = "Sorry, I didn't quite get that." }
-            } else {
-                text = "Sorry, something went wrong on my end. Please try again."
+    /// "what's 12 times 7", "15 plus 27", "100 divided by 4", "square root of 81", "20 percent of 150"
+    private static func maths(_ t: String) -> String? {
+        var s = " " + t + " "
+        for lead in [" what's ", " what is ", " whats ", " calculate ", " how much is ", " work out "] {
+            s = s.replacingOccurrences(of: lead, with: " ")
+        }
+        if let r = s.range(of: #"square root of ([0-9.]+)"#, options: .regularExpression) {
+            let n = Double(s[r].replacingOccurrences(of: "square root of ", with: "")) ?? 0
+            return "The square root of \(format(n)) is \(format(n.squareRoot()))."
+        }
+        if let r = s.range(of: #"([0-9.]+) percent of ([0-9.]+)"#, options: .regularExpression) {
+            let parts = s[r].components(separatedBy: " percent of ")
+            if parts.count == 2, let a = Double(parts[0]), let b = Double(parts[1]) {
+                return "\(format(a)) percent of \(format(b)) is \(format(a * b / 100))."
             }
-            DispatchQueue.main.async {
-                if let self {
-                    if ok {
-                        self.history.append(["role": "assistant", "content": text])
-                    } else if !self.history.isEmpty {
-                        self.history.removeLast()
-                    }
-                }
-                completion(text)
-            }
+        }
+        let words: [(String, String)] = [
+            (" multiplied by ", " * "), (" times ", " * "), (" x ", " * "), (" divided by ", " / "),
+            (" over ", " / "), (" plus ", " + "), (" add ", " + "), (" minus ", " - "), (" take away ", " - "),
+            (" squared ", " ** 2 "), (" cubed ", " ** 3 ")
+        ]
+        for (w, op) in words { s = s.replacingOccurrences(of: w, with: op) }
+        let expr = s.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "?", with: "")
+        guard expr.range(of: #"^[0-9.\s+\-*/()]+$"#, options: .regularExpression) != nil,
+              expr.rangeOfCharacter(from: CharacterSet(charactersIn: "+-*/")) != nil,
+              expr.rangeOfCharacter(from: .decimalDigits) != nil else { return nil }
+        // Make every whole number a decimal so 7 / 2 gives 3.5, not 3.
+        let decimal = expr.replacingOccurrences(of: #"(?<![\d.])(\d+)(?![\d.])"#, with: "$1.0", options: .regularExpression)
+        var result: Double?
+        // NSExpression raises an Objective-C exception on bad input; catch it instead of crashing.
+        try? OLEDSafe.run {
+            let value = NSExpression(format: decimal).expressionValue(with: nil, context: nil)
+            result = (value as? NSNumber)?.doubleValue
+        }
+        guard let value = result, value.isFinite else { return nil }
+        return "That's \(format(value))."
+    }
+
+    static func format(_ n: Double) -> String {
+        if n == n.rounded() && abs(n) < 1e15 { return String(Int(n)) }
+        let f = NumberFormatter()
+        f.maximumFractionDigits = 4
+        f.minimumFractionDigits = 0
+        return f.string(from: NSNumber(value: n)) ?? String(n)
+    }
+
+    // MARK: Free lookups (no key)
+
+    private static func getJSON(_ url: URL, completion: @escaping (Any?) -> Void) {
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 12
+        request.setValue("OLED-Mac-assistant/1.0", forHTTPHeaderField: "User-Agent")
+        URLSession.shared.dataTask(with: request) { data, _, _ in
+            completion(data.flatMap { try? JSONSerialization.jsonObject(with: $0) })
         }.resume()
+    }
+
+    private static func lookUp(_ t: String, done: @escaping (String) -> Void) {
+        // Meanings: "what does X mean", "define X", "meaning of X"
+        for pattern in [#"^(?:define|definition of|meaning of|what's the meaning of|what is the meaning of) (.+)$"#,
+                        #"^what does (.+) mean$"#] {
+            if let regex = try? NSRegularExpression(pattern: pattern),
+               let m = regex.firstMatch(in: t, range: NSRange(t.startIndex..., in: t)),
+               let r = Range(m.range(at: 1), in: t) {
+                define(String(t[r]), done: done)
+                return
+            }
+        }
+        // People, places, things: strip the question words and ask Wikipedia.
+        var topic = t
+        for lead in ["tell me about ", "tell me something about ", "who is ", "who was ", "who are ", "what is a ", "what is an ",
+                     "what is ", "what's a ", "what's an ", "what's ", "what are ", "where is ", "where's ", "when was ", "when is ",
+                     "how does ", "how do ", "why is ", "why do ", "explain ", "do you know ", "search for ", "look up ", "who's "]
+        where topic.hasPrefix(lead) {
+            topic = String(topic.dropFirst(lead.count))
+            break
+        }
+        for tail in [" please", " for me"] where topic.hasSuffix(tail) { topic.removeLast(tail.count) }
+        wikipedia(topic.isEmpty ? t : topic, done: done)
+    }
+
+    private static func define(_ word: String, done: @escaping (String) -> Void) {
+        let w = word.trimmingCharacters(in: .whitespaces)
+        guard let encoded = w.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
+              let url = URL(string: "https://api.dictionaryapi.dev/api/v2/entries/en/\(encoded)") else {
+            wikipedia(w, done: done); return
+        }
+        getJSON(url) { json in
+            guard let entries = json as? [[String: Any]],
+                  let meanings = entries.first?["meanings"] as? [[String: Any]],
+                  let first = meanings.first,
+                  let defs = first["definitions"] as? [[String: Any]],
+                  let definition = defs.first?["definition"] as? String else {
+                wikipedia(w, done: done); return
+            }
+            let kind = (first["partOfSpeech"] as? String).map { " is a \($0) meaning" } ?? " means"
+            done("\(w.capitalized)\(kind): \(definition)")
+        }
+    }
+
+    private static func wikipedia(_ topic: String, done: @escaping (String) -> Void) {
+        var search = URLComponents(string: "https://en.wikipedia.org/w/api.php")!
+        search.queryItems = [
+            URLQueryItem(name: "action", value: "query"), URLQueryItem(name: "list", value: "search"),
+            URLQueryItem(name: "srsearch", value: topic), URLQueryItem(name: "srlimit", value: "1"),
+            URLQueryItem(name: "format", value: "json")
+        ]
+        getJSON(search.url!) { json in
+            guard let query = (json as? [String: Any])?["query"] as? [String: Any],
+                  let results = query["search"] as? [[String: Any]],
+                  let title = results.first?["title"] as? String,
+                  let encoded = title.replacingOccurrences(of: " ", with: "_")
+                    .addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
+                  let summaryURL = URL(string: "https://en.wikipedia.org/api/rest_v1/page/summary/\(encoded)") else {
+                done("I'm not sure about that one. Try asking it a different way.")
+                return
+            }
+            getJSON(summaryURL) { json in
+                guard let extract = (json as? [String: Any])?["extract"] as? String, !extract.isEmpty else {
+                    done("I'm not sure about that one. Try asking it a different way.")
+                    return
+                }
+                done(firstSentences(of: extract, count: 2))
+            }
+        }
+    }
+
+    private static func firstSentences(of text: String, count: Int) -> String {
+        var sentences: [String] = []
+        text.enumerateSubstrings(in: text.startIndex..., options: .bySentences) { sub, _, _, stop in
+            if let sub { sentences.append(sub.trimmingCharacters(in: .whitespaces)) }
+            if sentences.count >= count { stop = true }
+        }
+        let result = sentences.joined(separator: " ")
+        return result.isEmpty ? text : result
     }
 }
