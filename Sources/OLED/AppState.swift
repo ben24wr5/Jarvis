@@ -197,11 +197,12 @@ final class AppState: ObservableObject {
     }
 
     /// Runs `work` once OLED isn't busy talking or listening.
-    private func whenIdle(_ work: @escaping () -> Void) {
-        if stage == .asleep && !speaker.isSpeaking {
+    private func whenIdle(_ work: @escaping () -> Void, waited: TimeInterval = 0) {
+        // Never wait more than a minute, so an update can't get stuck behind a busy state.
+        if (stage == .asleep && !speaker.isSpeaking) || waited >= 60 {
             work()
         } else {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in self?.whenIdle(work) }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in self?.whenIdle(work, waited: waited + 5) }
         }
     }
 

@@ -18,7 +18,7 @@ final class Updater {
     }
 
     func startAutomaticChecks() {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak self] in self?.check(userAsked: false) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in self?.check(userAsked: false) }
         timer = Timer.scheduledTimer(withTimeInterval: 3 * 60 * 60, repeats: true) { [weak self] _ in
             self?.check(userAsked: false)
         }
