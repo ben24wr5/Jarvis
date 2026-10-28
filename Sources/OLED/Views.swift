@@ -193,6 +193,7 @@ struct SettingsView: View {
                         statusRow("Microphone", ok: AppState.microphoneStatusOK)
                         statusRow("Speech Recognition", ok: AppState.speechStatusOK)
                         statusRow("Accessibility (keyboard & typing)", ok: AccessibilityPermission.isGranted)
+                        statusRow("Apple Intelligence (answers any question)", ok: ChatClient.appleAIAvailable)
                         Text("Listening: \(app.listenStatus)")
                         HStack(spacing: 8) {
                             Text("Mic level")

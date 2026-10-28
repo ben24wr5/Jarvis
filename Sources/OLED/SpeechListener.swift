@@ -413,9 +413,24 @@ final class SpeechListener {
 
         silenceTimer?.invalidate()
         guard !command.isEmpty else { return }
-        silenceTimer = Timer.scheduledTimer(withTimeInterval: 1.3, repeats: false) { [weak self] _ in
+        silenceTimer = Timer.scheduledTimer(withTimeInterval: Self.pauseAllowed(after: command), repeats: false) { [weak self] _ in
             self?.finish()
         }
+    }
+
+    /// How long a pause means you've finished speaking. Questions and sentences that stop on a word
+    /// like "the", "and" or "of" clearly aren't finished, so OLED waits longer before answering.
+    static func pauseAllowed(after text: String) -> TimeInterval {
+        let words = text.lowercased().split(separator: " ").map(String.init)
+        guard let last = words.last else { return 2.0 }
+        let unfinished: Set<String> = ["the", "a", "an", "and", "or", "but", "of", "to", "in", "on", "at", "for", "with",
+                                       "is", "are", "was", "were", "my", "your", "about", "what", "who", "how", "why",
+                                       "when", "where", "which", "that", "this", "if", "from", "into", "than", "like", "um", "uh"]
+        if unfinished.contains(last) { return 3.2 }
+        let questionStart: Set<String> = ["what", "who", "how", "why", "when", "where", "which", "is", "are", "can",
+                                          "could", "should", "would", "do", "does", "did", "tell", "explain"]
+        if let first = words.first, questionStart.contains(first) { return 2.3 }
+        return 1.8
     }
 
     private func armGiveUp() {

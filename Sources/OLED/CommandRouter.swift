@@ -63,7 +63,11 @@ final class CommandRouter {
             return true
         }
 
-        if words.contains("what time") || words.contains("the time") || words == "time" {
+        // Only real "what's the time?" questions — not "what time does the match start".
+        let timeQuestions = ["what time is it", "what's the time", "whats the time", "what is the time", "time",
+                             "the time", "tell me the time", "what time is it now", "what's the time now",
+                             "current time", "time now", "what time it is", "do you know the time", "got the time"]
+        if timeQuestions.contains(words) {
             let f = DateFormatter()
             f.locale = Locale(identifier: "en_GB")
             f.dateFormat = "h:mm a"
@@ -71,8 +75,10 @@ final class CommandRouter {
             return true
         }
 
-        if words.contains("the date") || words.contains("what day is it") || words.contains("what day is today")
-            || words.contains("today's date") {
+        let dateQuestions = ["what's the date", "whats the date", "what is the date", "what's today's date",
+                             "what is today's date", "today's date", "the date", "date", "what day is it", "what day is today",
+                             "what's the date today", "what is the date today", "what day is it today", "what's today"]
+        if dateQuestions.contains(words) {
             let f = DateFormatter()
             f.locale = Locale(identifier: "en_GB")
             f.dateFormat = "EEEE d MMMM yyyy"
@@ -80,9 +86,14 @@ final class CommandRouter {
             return true
         }
 
-        let weatherWords = ["weather", "forecast", "temperature", "going to rain", "gonna rain", "will it rain",
-                            "is it raining", "is it cold", "is it hot", "is it warm", "need an umbrella", "need a coat"]
-        if weatherWords.contains(where: { words.contains($0) }) {
+        // Weather — but not "what's the boiling temperature of water" or "how does a weather balloon work".
+        let weatherWords = ["weather", "forecast", "going to rain", "gonna rain", "will it rain", "is it raining",
+                            "is it cold", "is it hot", "is it warm", "need an umbrella", "need a coat", "temperature outside",
+                            "temperature today", "temperature tomorrow", "temperature in ", "how hot is it", "how cold is it",
+                            "is it sunny", "is it snowing", "will it snow"]
+        let notWeather = ["how does", "how do", "what is a", "what's a", "weather balloon", "weather vane", "boiling", "melting",
+                          "body temperature", "of water", "of the sun", "explain", "history of", "why does", "why do"]
+        if weatherWords.contains(where: { words.contains($0) }), !notWeather.contains(where: { words.contains($0) }) {
             let tomorrow = words.contains("tomorrow")
             if let place = Self.placeIn(words) ?? Weather.homeTown {
                 Weather.report(for: place, tomorrow: tomorrow) { reply(Reply(text: $0, expectsAnswer: false)) }
@@ -93,7 +104,10 @@ final class CommandRouter {
             return true
         }
 
-        if words.contains("joke") {
+        let jokeRequests = ["tell me a joke", "joke", "a joke", "another joke", "tell me another joke", "say a joke",
+                            "make me laugh", "tell a joke", "know any jokes", "do you know any jokes", "got any jokes",
+                            "tell me something funny", "say something funny", "give me a joke"]
+        if jokeRequests.contains(words) || words.hasPrefix("tell me a joke") || words.hasPrefix("tell me a funny") {
             reply(Reply(text: Self.jokes.randomElement()!, expectsAnswer: true))
             return true
         }

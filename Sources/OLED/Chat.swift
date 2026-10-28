@@ -194,6 +194,17 @@ final class ChatClient {
                 return
             }
         }
+        // Advice, "how do I…", opinions and chat can't be looked up — be honest instead of giving a random article.
+        let needsThinking = ["how do i ", "how can i ", "how should i ", "how to ", "should i ", "can you help",
+                             "help me ", "what should ", "which is better", "is it better", "recommend", "advice",
+                             "what do you think", "do you think", "your opinion", "would you rather", "can you write",
+                             "write me", "give me ideas", "ideas for", "plan my", "how long should", "what would you",
+                             "why do i ", "why am i ", "how are you feeling", "do you like", "what's your favourite",
+                             "what is your favourite", "what's your favorite"]
+        if needsThinking.contains(where: { t.hasPrefix($0) || t.contains(" " + $0) }) {
+            done(cantAnswer)
+            return
+        }
         // People, places, things: strip the question words and ask Wikipedia.
         var topic = t
         for lead in ["tell me about ", "tell me something about ", "who is ", "who was ", "who are ", "what is a ", "what is an ",
@@ -203,8 +214,40 @@ final class ChatClient {
             topic = String(topic.dropFirst(lead.count))
             break
         }
-        for tail in [" please", " for me"] where topic.hasSuffix(tail) { topic.removeLast(tail.count) }
+        for tail in [" please", " for me", " work", " mean", " come from", " made of", " do"] where topic.hasSuffix(tail) {
+            topic.removeLast(tail.count)
+        }
+        for lead in ["the ", "a ", "an "] where topic.hasPrefix(lead) { topic.removeFirst(lead.count) }
         wikipedia(topic.isEmpty ? t : topic, done: done)
+    }
+
+    /// Said when a question needs real thinking and Apple Intelligence isn't available.
+    static var cantAnswer: String {
+        appleAIAvailable
+            ? "I couldn't work that one out. Try asking it a different way."
+            : "I can't answer that kind of question yet. Switch on Apple Intelligence in System Settings, under Apple Intelligence and Siri, and I'll be able to answer questions like that."
+    }
+
+    /// Whether this Mac's Apple Intelligence can be used right now (shown in Settings → Status too).
+    static var appleAIAvailable: Bool {
+        #if canImport(FoundationModels)
+        if #available(macOS 26.0, *) {
+            if case .available = SystemLanguageModel.default.availability { return true }
+        }
+        #endif
+        return false
+    }
+
+    private static let stopWords: Set<String> = ["the", "a", "an", "of", "in", "on", "is", "are", "was", "were", "and",
+                                                 "to", "for", "about", "what", "who", "how", "why", "does", "do", "did"]
+
+    /// The article must actually be about what was asked (shares a real word), otherwise it's not an answer.
+    private static func relevant(_ topic: String, title: String, extract: String) -> Bool {
+        let words = topic.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init)
+            .filter { $0.count >= 3 && !stopWords.contains($0) }
+        guard !words.isEmpty else { return true }
+        let haystack = (title + " " + firstSentences(of: extract, count: 1)).lowercased()
+        return words.contains { haystack.contains($0) }
     }
 
     private static func define(_ word: String, done: @escaping (String) -> Void) {
@@ -240,12 +283,13 @@ final class ChatClient {
                   let encoded = title.replacingOccurrences(of: " ", with: "_")
                     .addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
                   let summaryURL = URL(string: "https://en.wikipedia.org/api/rest_v1/page/summary/\(encoded)") else {
-                done("I'm not sure about that one. Try asking it a different way.")
+                done(cantAnswer)
                 return
             }
             getJSON(summaryURL) { json in
-                guard let extract = (json as? [String: Any])?["extract"] as? String, !extract.isEmpty else {
-                    done("I'm not sure about that one. Try asking it a different way.")
+                guard let extract = (json as? [String: Any])?["extract"] as? String, !extract.isEmpty,
+                      relevant(topic, title: title, extract: extract) else {
+                    done(cantAnswer)
                     return
                 }
                 done(firstSentences(of: extract, count: 2))
