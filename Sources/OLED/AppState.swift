@@ -76,6 +76,20 @@ final class AppState: ObservableObject {
             }
         case .noMicrophone:
             message = "I can't find a microphone. Please check the sound input in System Settings."
+        case .silentMicrophone:
+            let key = "permissionResetBuild"
+            if UserDefaults.standard.integer(forKey: key) != Updater.currentBuild {
+                // First time for this version: repair the permissions ourselves and reopen.
+                UserDefaults.standard.set(Updater.currentBuild, forKey: key)
+                listener.stop()
+                stage = .speaking
+                speaker.speak("My microphone permission got stuck after the update. I'm fixing it now. When your Mac asks, click Allow.") {
+                    Self.resetPermissionsAndRelaunch()
+                }
+                return
+            }
+            message = "My microphone is still blocked. In System Settings, under Privacy and Security, then Microphone, switch me off and on again. I've opened it for you."
+            Self.openPrivacy("Privacy_Microphone")
         }
         listener.stop()
         stage = .speaking
@@ -103,6 +117,26 @@ final class AppState: ObservableObject {
         } else {
             done(Self.microphoneGranted)
         }
+    }
+
+    /// Clears OLED's stale Microphone, Speech Recognition and Accessibility entries, then reopens,
+    /// so macOS asks again and grants them to this version of the app.
+    static func resetPermissionsAndRelaunch() {
+        let id = Bundle.main.bundleIdentifier ?? "com.ben24wr5.oled"
+        for service in ["Microphone", "SpeechRecognition", "Accessibility"] {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
+            p.arguments = ["reset", service, id]
+            try? p.run()
+            p.waitUntilExit()
+        }
+        UserDefaults.standard.set(false, forKey: "setupDone") // show the two setup steps again
+        let path = Bundle.main.bundlePath
+        let relaunch = Process()
+        relaunch.executableURL = URL(fileURLWithPath: "/bin/sh")
+        relaunch.arguments = ["-c", "sleep 1; /usr/bin/open \"\(path)\""]
+        try? relaunch.run()
+        NSApp.terminate(nil)
     }
 
     static var microphoneStatusOK: Bool { AVCaptureDevice.authorizationStatus(for: .audio) == .authorized }

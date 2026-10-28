@@ -33,12 +33,31 @@ final class SpeechListener {
         }
     }
 
+    /// A real microphone always picks up some faint noise. Seconds of perfect silence mean macOS is
+    /// blocking the microphone for this copy of OLED, even if System Settings shows it switched on.
+    private var silentSeconds: Double = 0
+    private var everHeardSignal = false
+    private var reportedSilence = false
+
     private func measureLevel(_ buffer: AVAudioPCMBuffer) {
         guard let data = buffer.floatChannelData?[0], buffer.frameLength > 0 else { return }
         var peak: Float = 0
         for i in 0..<Int(buffer.frameLength) { peak = max(peak, abs(data[i])) }
         micLevel = peak
         if peak > sessionPeak { sessionPeak = peak }
+
+        if peak > 0 {
+            everHeardSignal = true
+        } else if !everHeardSignal, !reportedSilence {
+            silentSeconds += Double(buffer.frameLength) / max(1, buffer.format.sampleRate)
+            if silentSeconds >= 4 {
+                reportedSilence = true
+                DispatchQueue.main.async { [weak self] in
+                    self?.report("Microphone is giving pure silence – permission is blocked for this copy of OLED")
+                    self?.onBlocked?(.silentMicrophone)
+                }
+            }
+        }
     }
 
     /// Errors that happen in normal use (silence, restarts) and aren't worth showing.
@@ -84,7 +103,7 @@ final class SpeechListener {
     // MARK: Control
 
     /// Why listening can't work, in a form OLED can say out loud.
-    enum Blocker { case microphone, speechRecognition, dictation, noMicrophone }
+    enum Blocker { case microphone, speechRecognition, dictation, noMicrophone, silentMicrophone }
     var onBlocked: ((Blocker) -> Void)?
 
     /// Starts listening. Returns false (and calls `onBlocked`) when something stops it working.

@@ -167,7 +167,10 @@ struct SettingsView: View {
                     Button("Microphone settings") { AppState.openPrivacy("Privacy_Microphone") }
                     Button("Speech Recognition settings") { AppState.openPrivacy("Privacy_SpeechRecognition") }
                 }
-                Button("Restart listening") { app.restartListening() }
+                HStack {
+                    Button("Restart listening") { app.restartListening() }
+                    Button("Repair permissions") { AppState.resetPermissionsAndRelaunch() }
+                }
             }
 
             Section("Voice") {
@@ -208,14 +211,6 @@ struct SettingsView: View {
 
             Section("Weather") {
                 TextField("Home town or city", text: $homeTown)
-                    .onChange(of: homeTown) { t in Weather.homeTown = t }
-                Text("Used when you ask “what's the weather?” without naming a place.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
-
-            Section("Weather") {
-                TextField("Home town (e.g. London)", text: $homeTown)
                     .onChange(of: homeTown) { t in Weather.homeTown = t }
                 Text("Used when you ask “what's the weather?” without naming a place.")
                     .font(.caption)
