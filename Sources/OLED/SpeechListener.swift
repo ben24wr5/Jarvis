@@ -27,6 +27,56 @@ final class SpeechListener {
     private(set) var lastHeard = ""
     private(set) var micLevel: Float = 0
 
+    // MARK: Following the microphone (AirPods in or out)
+
+    private var deviceWatchInstalled = false
+    private var configObserver: NSObjectProtocol?
+    private var restartPending = false
+
+    /// When the Mac switches microphone (AirPods in or out, a headset plugged in), restart listening
+    /// on the new microphone, keeping whatever OLED was doing.
+    private func watchMicrophoneChanges() {
+        guard !deviceWatchInstalled else { return }
+        deviceWatchInstalled = true
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, DispatchQueue.main) { [weak self] _, _ in
+            self?.microphoneChanged()
+        }
+    }
+
+    private func observe(_ engine: AVAudioEngine) {
+        if let configObserver { NotificationCenter.default.removeObserver(configObserver) }
+        configObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main
+        ) { [weak self] _ in self?.microphoneChanged() }
+    }
+
+    private func microphoneChanged() {
+        // A new microphone can start with a moment of silence: don't mistake it for a blocked mic.
+        silentSeconds = 0
+        guard isActive, !restartPending else { return }
+        restartPending = true
+        report("Microphone changed – switching over")
+        // Give macOS a moment to finish connecting the new microphone (AirPods take a second).
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+            guard let self else { return }
+            self.restartPending = false
+            guard self.isActive else { return }
+            let remaining = self.giveUpTimer?.fireDate.timeIntervalSinceNow ?? self.directTimeout
+            let mode = self.mode
+            let wasWoke = self.woke
+            self.start(mode: mode, timeout: max(3, remaining))
+            if wasWoke && mode == .wake { self.woke = true; self.armGiveUp() }
+        }
+    }
+
+    /// True while OLED is meant to be listening (it stops while it speaks).
+    private var isActive = false
+    private var noMicRetries = 0
+
     private func report(_ status: String) {
         if Thread.isMainThread { onStatus?(status) } else {
             DispatchQueue.main.async { [weak self] in self?.onStatus?(status) }
@@ -132,6 +182,8 @@ final class SpeechListener {
 
         self.mode = mode
         self.directTimeout = timeout
+        isActive = true
+        watchMicrophoneChanges()
         woke = (mode == .direct)
         commandText = ""
         sessionStarted = Date()
@@ -150,13 +202,26 @@ final class SpeechListener {
         // A fresh engine each time avoids crashes when the Mac's microphone or its format changes.
         engine = AVAudioEngine()
         let engine = self.engine
+        observe(engine)
         let input = engine.inputNode
         let format = input.outputFormat(forBus: 0)
         guard format.channelCount > 0, format.sampleRate > 0 else {
+            // Often just a microphone mid-switch (AirPods connecting): wait and try again quietly first.
+            if noMicRetries < 4 {
+                noMicRetries += 1
+                report("Waiting for the microphone to connect…")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+                    guard let self, self.generation == gen else { return }
+                    self.start(mode: mode, timeout: timeout)
+                }
+                return true
+            }
+            noMicRetries = 0
             report("No microphone found – check System Settings → Sound → Input")
             onBlocked?(.noMicrophone)
             return false
         }
+        noMicRetries = 0
         do {
             try OLEDSafe.run {
                 input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self, weak request] buffer, _ in
@@ -240,6 +305,7 @@ final class SpeechListener {
 
     func stop() {
         generation += 1
+        isActive = false
         silenceTimer?.invalidate(); silenceTimer = nil
         giveUpTimer?.invalidate(); giveUpTimer = nil
         refreshTimer?.invalidate(); refreshTimer = nil
