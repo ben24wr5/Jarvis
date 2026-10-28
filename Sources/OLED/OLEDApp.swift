@@ -40,6 +40,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Start OLED automatically when the Mac turns on (on by default; switch in Settings).
+        if UserDefaults.standard.object(forKey: LaunchAtLogin.key) == nil {
+            UserDefaults.standard.set(true, forKey: LaunchAtLogin.key)
+        }
+        LaunchAtLogin.apply()
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
     }

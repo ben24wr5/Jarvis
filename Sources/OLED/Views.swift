@@ -138,6 +138,7 @@ struct SettingsView: View {
     @State private var robot = UserDefaults.standard.object(forKey: Speaker.robotKey) as? Double ?? 0.5
     @State private var voiceID = Speaker.selectedVoice?.identifier ?? ""
     @State private var homeTown = Weather.homeTown ?? ""
+    @State private var openAtLogin = LaunchAtLogin.wanted
     private let voices = Speaker.britishVoices
 
     var body: some View {
@@ -219,6 +220,11 @@ struct SettingsView: View {
                 Text("Used when you ask “what's the weather?” without naming a place.")
                     .font(.caption)
                     .foregroundColor(.secondary)
+            }
+
+            Section("Startup") {
+                Toggle("Open OLED when my Mac starts", isOn: $openAtLogin)
+                    .onChange(of: openAtLogin) { on in LaunchAtLogin.wanted = on }
             }
 
             Section("Updates") {
