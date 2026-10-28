@@ -196,7 +196,8 @@ final class SpeechListener {
         // On-device first (works even with Siri/Dictation off); online if the on-device model fails.
         request.requiresOnDeviceRecognition = useOnDevice && recognizer.supportsOnDeviceRecognition
         if #available(macOS 13, *) { request.addsPunctuation = false }
-        request.contextualStrings = ["OLED", "O.L.E.D.", "O L E D", "Hey OLED", "Firefox", "Safari", "open", "press", "type", "weather"]
+        request.contextualStrings = ["OLED", "Oled", "O.L.E.D.", "O L E D", "Hey OLED", "Oh LED",
+                                     "Firefox", "Safari", "open", "press", "type", "go to", "search for", "weather"]
         self.request = request
 
         // A fresh engine each time avoids crashes when the Mac's microphone or its format changes.
@@ -327,25 +328,9 @@ final class SpeechListener {
 
     // MARK: Handling speech
 
-    /// Ways Apple's recogniser writes "O-L-E-D": OLED, O.L.E.D., O L E D, oh LED, O led, Ole D, Olé D…
-    private static let wakePattern = try! NSRegularExpression(
-        pattern: "\\b(?:oh?\\s*l\\s*e\\s*d|o\\s*led|ole\\s*d|oh\\s*led|o\\s*l\\s*ed)\\b",
-        options: [.caseInsensitive])
-
     /// Returns the text spoken after the name "OLED", or nil if the name wasn't said.
     static func textAfterWakeWord(in text: String) -> String? {
-        var cleaned = text.lowercased()
-            .replacingOccurrences(of: "é", with: "e")
-        for mark in ["-", ".", ",", "!", "?", ":", ";", "'", "\""] {
-            cleaned = cleaned.replacingOccurrences(of: mark, with: " ")
-        }
-        while cleaned.contains("  ") { cleaned = cleaned.replacingOccurrences(of: "  ", with: " ") }
-        let ns = cleaned as NSString
-        guard let match = wakePattern.firstMatch(in: cleaned, range: NSRange(location: 0, length: ns.length)) else {
-            return nil
-        }
-        let end = match.range.location + match.range.length
-        return ns.substring(from: end)
+        WakeWord.textAfter(in: text)
     }
 
     private func handle(text: String) {

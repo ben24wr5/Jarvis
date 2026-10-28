@@ -14,6 +14,7 @@ final class CommandRouter {
 
     private var pendingURL: URL?
     private var pendingName = ""
+    private var pendingTyped: String?
     private var browserAsks = 0
     private var pendingWeatherTomorrow: Bool?
     private var pendingPower: PowerAction?
@@ -124,20 +125,21 @@ final class CommandRouter {
     }
 
     private static let cancelWords = ["cancel", "stop", "never mind", "nevermind", "forget it", "nothing", "no thanks"]
-    private static let openVerbs = ["open up ", "open ", "launch ", "start ", "run ", "go to ", "visit ", "show me ", "load ", "bring up "]
+    private static let openVerbs = ["open up ", "open ", "launch ", "start up ", "start ", "run ", "go to ", "go on ", "visit ",
+                                    "take me to ", "navigate to ", "show me ", "load ", "bring up "]
 
     func handle(_ raw: String, reply: @escaping (Reply) -> Void) {
-        let text = raw.lowercased()
-            .trimmingCharacters(in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: ".,!?")))
-        let politeStripped = Self.stripPoliteness(text)
+        // "OLED, can you please open Safari" → "open safari"; "I want you to go to YouTube" → "go to youtube"
+        let text = Self.normalise(raw)
+        let politeStripped = Self.fromCommandVerb(text)
 
         // 1. Answering "Firefox or Safari?"
         if let url = pendingURL {
-            if text.contains("firefox") || text.contains("fire fox") {
-                reply(openSite(url, name: pendingName, in: .firefox)); return
+            if text.contains("firefox") || text.contains("fire fox") || text.contains("fox") {
+                reply(openSite(url, name: pendingName, in: .firefox, typed: pendingTyped)); return
             }
-            if text.contains("safari") {
-                reply(openSite(url, name: pendingName, in: .safari)); return
+            if text.contains("safari") || text.contains("sa far") || text.contains("savari") {
+                reply(openSite(url, name: pendingName, in: .safari, typed: pendingTyped)); return
             }
             if Self.cancelWords.contains(where: { text.contains($0) }) {
                 clearPending()
@@ -190,11 +192,29 @@ final class CommandRouter {
             reply(Reply(text: action.goodbye, expectsAnswer: false)); return
         }
 
-        // 2b. Everyday questions answered right here on the Mac (like Siri)
-        if everyday(politeStripped, raw: raw, reply: reply) { return }
+        // 2b. Everyday questions answered right here on the Mac (like Siri) — unless it's clearly a command
+        if !Self.isCommand(politeStripped), everyday(politeStripped, raw: raw, reply: reply) { return }
+
+        // 2c. Searching: "search for cats", "google the weather in Paris", "search for music on YouTube"
+        for prefix in ["search for ", "search ", "google ", "look for ", "find me "] where politeStripped.hasPrefix(prefix) {
+            var query = String(politeStripped.dropFirst(prefix.count))
+            var browser: Browser?
+            for (phrase, b) in Self.browserSuffixes where query.hasSuffix(phrase) {
+                query.removeLast(phrase.count); browser = b
+            }
+            reply(search(query.trimmingCharacters(in: .whitespaces), in: browser)); return
+        }
 
         // 3. Typing
-        for prefix in ["type out ", "type ", "write "] where politeStripped.hasPrefix(prefix) {
+        for prefix in ["type out ", "type in ", "type ", "write "] where politeStripped.hasPrefix(prefix) {
+            var spoken = String(politeStripped.dropFirst(prefix.count))
+            // "type youtube.com in Safari" → open it in Safari
+            for (phrase, browser) in Self.browserSuffixes + [(" into safari", Browser.safari), (" into firefox", Browser.firefox)]
+            where spoken.hasSuffix(phrase) {
+                spoken.removeLast(phrase.count)
+                var target = spoken
+                reply(open(&target, browser: browser, forceWeb: true)); return
+            }
             let original = Self.originalTail(of: raw, after: prefix)
             guard AccessibilityPermission.isGranted else { reply(needAccessibility()); return }
             keyboard.type(original)
@@ -226,8 +246,61 @@ final class CommandRouter {
 
     // MARK: Opening
 
-    private func open(_ target: inout String) -> Reply {
-        var forceWeb = false
+    private static let browserSuffixes: [(String, Browser)] = [
+        (" in firefox", .firefox), (" on firefox", .firefox), (" with firefox", .firefox), (" using firefox", .firefox),
+        (" in fire fox", .firefox), (" on fire fox", .firefox),
+        (" in safari", .safari), (" on safari", .safari), (" with safari", .safari), (" using safari", .safari)
+    ]
+
+    /// Opens a browser and searches: types the words into the address bar like you would.
+    private func search(_ query: String, in browser: Browser?) -> Reply {
+        guard !query.isEmpty else { return Reply(text: "What should I search for?", expectsAnswer: false) }
+        var q = query
+        var url: URL?
+        var typed = q
+        if q.hasSuffix(" on youtube") {
+            q.removeLast(" on youtube".count)
+            var c = URLComponents(string: "https://www.youtube.com/results")!
+            c.queryItems = [URLQueryItem(name: "search_query", value: q)]
+            url = c.url
+            typed = "youtube.com/results?search_query=" + (q.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? q)
+        } else {
+            var c = URLComponents(string: "https://www.google.com/search")!
+            c.queryItems = [URLQueryItem(name: "q", value: q)]
+            url = c.url
+        }
+        guard let url else { return Reply(text: "What should I search for?", expectsAnswer: false) }
+        let name = "a search for \(q)"
+        if let browser { return openSite(url, name: name, in: browser, typed: typed) }
+        pendingURL = url
+        pendingName = name
+        pendingTyped = typed
+        browserAsks = 0
+        return Reply(text: "Do you want me to search in Firefox or Safari?", expectsAnswer: true)
+    }
+
+    private func open(_ target: inout String, browser preset: Browser? = nil, forceWeb presetWeb: Bool = false) -> Reply {
+        var forceWeb = presetWeb
+
+        // Browser first: "Safari and go to YouTube", "Firefox then search for cats", "Safari youtube.com"
+        if preset == nil {
+            for (name, browser) in [("safari", Browser.safari), ("firefox", .firefox), ("fire fox", .firefox)] {
+                for joiner in [" and ", " then ", " to ", " "] where target.hasPrefix(name + joiner) {
+                    var rest = String(target.dropFirst(name.count + joiner.count)).trimmingCharacters(in: .whitespaces)
+                    guard !rest.isEmpty else { continue }
+                    for verb in ["and ", "then ", "go to ", "go on ", "open up ", "open ", "visit ", "load ", "navigate to ",
+                                 "take me to ", "type in ", "type ", "put in "] where rest.hasPrefix(verb) {
+                        rest.removeFirst(verb.count)
+                    }
+                    for verb in ["search for ", "search ", "google ", "look for "] where rest.hasPrefix(verb) {
+                        return search(String(rest.dropFirst(verb.count)), in: browser)
+                    }
+                    var site = rest
+                    return open(&site, browser: browser, forceWeb: true)
+                }
+            }
+        }
+
         for filler in ["this website ", "the website ", "website ", "this site ", "the site ", "this link ", "this page "]
         where target.hasPrefix(filler) {
             target.removeFirst(filler.count)
@@ -239,12 +312,8 @@ final class CommandRouter {
         }
 
         // Browser said up front: "open YouTube in Firefox"
-        var chosen: Browser?
-        let browserPhrases: [(String, Browser)] = [
-            (" in firefox", .firefox), (" on firefox", .firefox), (" with firefox", .firefox),
-            (" in safari", .safari), (" on safari", .safari), (" with safari", .safari)
-        ]
-        for (phrase, browser) in browserPhrases where target.hasSuffix(phrase) {
+        var chosen: Browser? = preset
+        for (phrase, browser) in Self.browserSuffixes where target.hasSuffix(phrase) {
             target.removeLast(phrase.count)
             chosen = browser
         }
@@ -272,18 +341,19 @@ final class CommandRouter {
 
         pendingURL = url
         pendingName = name
+        pendingTyped = nil
         browserAsks = 0
         return Reply(text: "Do you want me to open it in Firefox or Safari?", expectsAnswer: true)
     }
 
-    private func openSite(_ url: URL, name: String, in browser: Browser) -> Reply {
+    private func openSite(_ url: URL, name: String, in browser: Browser, typed: String? = nil) -> Reply {
         clearPending()
         guard browser.appURL != nil else {
             return Reply(text: "\(browser.rawValue) doesn't seem to be installed on this Mac.", expectsAnswer: false)
         }
         if AccessibilityPermission.isGranted {
-            // Type the address into the browser for you.
-            var address = url.absoluteString
+            // Type the address (or the search words) into the browser for you.
+            var address = typed ?? url.absoluteString
             for scheme in ["https://", "http://"] where address.hasPrefix(scheme) { address.removeFirst(scheme.count) }
             keyboard.typeAddress(address, in: browser)
         } else {
@@ -295,6 +365,7 @@ final class CommandRouter {
     private func clearPending() {
         pendingURL = nil
         pendingName = ""
+        pendingTyped = nil
         browserAsks = 0
     }
 
@@ -305,13 +376,55 @@ final class CommandRouter {
 
     // MARK: Helpers
 
-    private static func stripPoliteness(_ text: String) -> String {
-        var t = text
-        for lead in ["can you ", "could you ", "would you ", "will you ", "please ", "just ", "now "] {
-            while t.hasPrefix(lead) { t.removeFirst(lead.count) }
+    private static let commandVerbs = [
+        "open up ", "open ", "launch ", "start up ", "start ", "run ", "go to ", "go on ", "visit ", "take me to ",
+        "bring up ", "show me ", "load ", "navigate to ", "type out ", "type in ", "type ", "write ", "press ", "hit ",
+        "push ", "search for ", "search ", "google ", "look for ", "find me "
+    ]
+
+    private static func isCommand(_ t: String) -> Bool {
+        commandVerbs.contains { t.hasPrefix($0) }
+    }
+
+    /// Lower-cases, removes the name "OLED", punctuation and polite filler, keeping web addresses intact.
+    static func normalise(_ raw: String) -> String {
+        var t = WakeWord.strippedFromStart(raw).lowercased().replacingOccurrences(of: "’", with: "'")
+        for mark in [",", "!", "?", ";", ":", "\""] { t = t.replacingOccurrences(of: mark, with: " ") }
+        t = t.replacingOccurrences(of: ". ", with: " ")
+        while t.hasSuffix(".") { t.removeLast() }
+        while t.contains("  ") { t = t.replacingOccurrences(of: "  ", with: " ") }
+        t = t.trimmingCharacters(in: .whitespaces)
+
+        let leads = ["hey ", "okay ", "ok ", "so ", "um ", "uh ", "erm ", "right ", "and ", "can you please ",
+                     "could you please ", "would you please ", "can you ", "could you ", "would you ", "will you ",
+                     "please ", "just ", "now ", "i want you to ", "i need you to ", "i'd like you to ", "id like you to ",
+                     "i would like you to ", "go ahead and ", "quickly ", "can u ", "for me "]
+        var changed = true
+        while changed {
+            changed = false
+            for lead in leads where t.hasPrefix(lead) {
+                t.removeFirst(lead.count)
+                changed = true
+            }
         }
-        if t.hasSuffix(" please") { t.removeLast(" please".count) }
+        for tail in [" please", " for me", " right now", " now", " thanks", " thank you", " quickly"] where t.hasSuffix(tail) {
+            t.removeLast(tail.count)
+        }
         return t.trimmingCharacters(in: .whitespaces)
+    }
+
+    /// "i'd really love it if you'd open safari" → "open safari" (a command verb near the start).
+    static func fromCommandVerb(_ t: String) -> String {
+        if isCommand(t) { return t }
+        let questions = ["what", "who", "where", "when", "why", "how", "is", "are", "do", "does", "did", "tell",
+                         "which", "define", "explain", "should", "could", "would"]
+        if questions.contains(where: { t.hasPrefix($0 + " ") }) { return t }
+        var best: Range<String.Index>?
+        for verb in commandVerbs {
+            if let r = t.range(of: " " + verb), best == nil || r.lowerBound < best!.lowerBound { best = r }
+        }
+        guard let r = best, t[..<r.lowerBound].split(separator: " ").count <= 8 else { return t }
+        return String(t[t.index(after: r.lowerBound)...])
     }
 
     /// The words after a prefix, keeping the user's original capitalisation (for typing).
