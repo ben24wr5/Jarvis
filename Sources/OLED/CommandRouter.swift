@@ -201,6 +201,9 @@ final class CommandRouter {
             reply(Reply(text: "Okay.", expectsAnswer: false)); return
         }
 
+        // 1b2. Searching inside a website's own search box (YouTube, BBC, Amazon, Netflix…)
+        if let answer = siteSearch(politeStripped) { reply(answer); return }
+
         // 1c. Website requests that mention a browser or a new tab/window:
         //     "open a new window in Safari and type youtube.com and then enter"
         if Self.isCommand(politeStripped) || politeStripped.hasPrefix("new ") || politeStripped.hasPrefix("a new ")
@@ -387,8 +390,10 @@ final class CommandRouter {
     /// `place`: new tab / new window when you asked for one; nil means "you didn't say" — then OLED
     /// uses the current tab only if it's empty, and otherwise asks "new tab or new window?".
     private func openSite(_ url: URL, name: String, in browser: Browser, typed: String? = nil,
-                          place: KeyboardController.Place? = nil) -> Reply {
+                          place: KeyboardController.Place? = nil, thenSearch: String? = nil) -> Reply {
         clearPending()
+        // "…and search for X": once the site is open, type X into the site's own search box.
+        let afterOpen: (() -> Void)? = thenSearch.map { query in { PageSearch.run(query, in: browser, wait: 12) } }
         guard browser.appURL != nil else {
             return Reply(text: "\(browser.rawValue) doesn't seem to be installed on this Mac.", expectsAnswer: false)
         }
@@ -397,9 +402,10 @@ final class CommandRouter {
         let go: (URL, String) -> Void = { siteURL, address in
             if AccessibilityPermission.isGranted {
                 // Type the exact address (or the search words) into the browser for you.
-                keyboard.typeAddress(address, url: siteURL, in: browser, place: finalPlace)
+                keyboard.typeAddress(address, url: siteURL, in: browser, place: finalPlace, afterOpen: afterOpen)
             } else {
                 _ = browser.open(siteURL)
+                if let afterOpen { DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: afterOpen) }
             }
         }
         if let typed {
@@ -409,7 +415,8 @@ final class CommandRouter {
             Website.resolve(url, completion: go)
         }
         let placeText = finalPlace == .newTab ? " in a new tab" : (finalPlace == .newWindow ? " in a new window" : "")
-        return Reply(text: "Opening \(name) in \(browser.rawValue)\(placeText).", expectsAnswer: false)
+        let searchText = thenSearch.map { ", then searching for \($0)" } ?? ""
+        return Reply(text: "Opening \(name) in \(browser.rawValue)\(placeText)\(searchText).", expectsAnswer: false)
     }
 
     private func clearPending() {
@@ -418,6 +425,7 @@ final class CommandRouter {
         pendingTyped = nil
         pendingPlace = nil
         pendingBrowser = nil
+        pendingFollowUp = nil
         webStage = .browser
         browserAsks = 0
     }
@@ -431,8 +439,12 @@ final class CommandRouter {
     private var webStage: WebStage = .browser
     private var pendingBrowser: Browser?
 
-    private func startWeb(_ url: URL, name: String, typed: String?, browser: Browser?, place: KeyboardController.Place?) -> Reply {
+    private var pendingFollowUp: String?
+
+    private func startWeb(_ url: URL, name: String, typed: String?, browser: Browser?, place: KeyboardController.Place?,
+                          thenSearch: String? = nil) -> Reply {
         clearPending()
+        pendingFollowUp = thenSearch
         pendingURL = url
         pendingName = name
         pendingTyped = typed
@@ -448,7 +460,7 @@ final class CommandRouter {
             return Reply(text: "Do you want me to open it in Safari or Firefox?", expectsAnswer: true)
         }
         if let place = pendingPlace {
-            return openSite(url, name: pendingName, in: browser, typed: pendingTyped, place: place)
+            return openSite(url, name: pendingName, in: browser, typed: pendingTyped, place: place, thenSearch: pendingFollowUp)
         }
         webStage = .existingTab
         return Reply(text: "Do you already have a tab open with another website?", expectsAnswer: true)
@@ -522,6 +534,93 @@ final class CommandRouter {
         if s.contains(" new tab") || s.contains(" another tab") || s.contains(" new page") { return .newTab }
         if s.contains(" same tab") || s.contains(" this tab") || s.contains(" current tab") || s.contains(" same page")
             || s.contains(" same one") || s.contains(" this one") || s.contains(" here ") { return .current }
+        return nil
+    }
+
+    // MARK: Searching inside websites
+
+    private static func match(_ t: String, _ pattern: String) -> [String]? {
+        guard let re = try? NSRegularExpression(pattern: pattern),
+              let m = re.firstMatch(in: t, range: NSRange(t.startIndex..., in: t)) else { return nil }
+        return (1..<m.numberOfRanges).map { i in
+            Range(m.range(at: i), in: t).map { String(t[$0]) } ?? ""
+        }
+    }
+
+    private static func cleanQuery(_ q: String) -> String {
+        var s = q.trimmingCharacters(in: .whitespaces)
+        for lead in ["for ", "up "] where s.hasPrefix(lead) { s.removeFirst(lead.count) }
+        for tail in [" please", " for me"] where s.hasSuffix(tail) { s.removeLast(tail.count) }
+        return s.trimmingCharacters(in: .whitespaces)
+    }
+
+    /// Understands:
+    ///  • "type cats in the search bar" / "search for cats" (while a website is open) → that site's search box
+    ///  • "search YouTube for cats", "search for cats on BBC" → that site's search box (opening the site if needed)
+    ///  • "go to YouTube and search for football", "open a new tab in Safari, go to Amazon and search for shoes"
+    private func siteSearch(_ t: String) -> Reply? {
+        let browserNow = PageSearch.activeBrowser(lastApp: keyboard.lastExternalApp)
+
+        // "type cats in the search bar"
+        if let m = Self.match(t, #"^(?:type|put|write|enter)\s+(.+?)\s+(?:in|into|on)\s+(?:the\s+)?(?:search(?:\s*(?:bar|box|field))?|searchbar)$"#),
+           let browser = browserNow {
+            let query = Self.cleanQuery(m[0])
+            guard AccessibilityPermission.isGranted else { return needAccessibility() }
+            PageSearch.run(query, in: browser)
+            return Reply(text: "Searching for \(query).", expectsAnswer: false)
+        }
+
+        // "go to YouTube and search for football"
+        if let m = Self.match(t, #"^(.+?)\s+(?:and\s+)?(?:then\s+)?(?:search|look)\s+(?:for\s+|up\s+)?(.+)$"#),
+           Self.isCommand(m[0]) || m[0].hasPrefix("new ") || m[0].hasPrefix("a new "),
+           !m[0].hasPrefix("search") {
+            let openPart = m[0]
+            let query = Self.cleanQuery(m[1])
+            var site: String?
+            var browser: Browser?
+            var place: KeyboardController.Place?
+            if let plan = Self.parseWeb(openPart) {
+                site = plan.site; browser = plan.browser; place = plan.place
+            } else {
+                var rest = openPart
+                for verb in Self.openVerbs where rest.hasPrefix(verb) { rest.removeFirst(verb.count); break }
+                site = rest.trimmingCharacters(in: .whitespaces)
+            }
+            if let site, !site.isEmpty, !query.isEmpty,
+               PageSearch.siteAddress(for: site) != nil || browser != nil || place != nil || site.contains("."),
+               let url = Website.url(from: PageSearch.siteAddress(for: site) ?? site, force: true) {
+                return startWeb(url, name: Website.displayName(for: site), typed: nil, browser: browser, place: place,
+                                thenSearch: query)
+            }
+        }
+
+        // "search YouTube for cats" / "search for cats on YouTube"
+        var query: String?, site: String?
+        if let m = Self.match(t, #"^search\s+(.+?)\s+for\s+(.+)$"#), PageSearch.siteAddress(for: m[0]) != nil {
+            site = m[0]; query = Self.cleanQuery(m[1])
+        } else if let m = Self.match(t, #"^(?:search|look)\s+(?:for\s+|up\s+)?(.+)\s+(?:on|in|at)\s+(.+)$"#),
+                  PageSearch.siteAddress(for: m[1]) != nil {
+            site = m[1]; query = Self.cleanQuery(m[0])
+        }
+        if let site, let query, !query.isEmpty, let address = PageSearch.siteAddress(for: site) {
+            let root = address.split(separator: ".").suffix(2).joined(separator: ".")
+            if let browser = browserNow, let host = PageSearch.currentPageHost(in: browser), host.hasSuffix(root) {
+                guard AccessibilityPermission.isGranted else { return needAccessibility() }
+                PageSearch.run(query, in: browser)
+                return Reply(text: "Searching \(Website.displayName(for: site)) for \(query).", expectsAnswer: false)
+            }
+            guard let url = Website.url(from: address, force: true) else { return nil }
+            return startWeb(url, name: Website.displayName(for: site), typed: nil, browser: nil, place: nil, thenSearch: query)
+        }
+
+        // "search for cats" while a website with a search box is open → that website's search box
+        if let m = Self.match(t, #"^(?:search|look)\s+(?:for\s+)?(.+)$"#), let browser = browserNow,
+           AccessibilityPermission.isGranted, PageSearch.findSearchField(in: browser) != nil {
+            let q = Self.cleanQuery(m[0])
+            guard !q.isEmpty else { return nil }
+            PageSearch.run(q, in: browser)
+            return Reply(text: "Searching for \(q).", expectsAnswer: false)
+        }
         return nil
     }
 

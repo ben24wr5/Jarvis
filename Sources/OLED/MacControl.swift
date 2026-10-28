@@ -467,7 +467,7 @@ enum Website {
 // MARK: - Keyboard
 
 final class KeyboardController {
-    private var lastExternalApp: NSRunningApplication?
+    private(set) var lastExternalApp: NSRunningApplication?
     private var observer: NSObjectProtocol?
 
     init() {
@@ -562,7 +562,10 @@ final class KeyboardController {
     /// Where to open a website: a new tab, a new window, or the current (empty) tab.
     enum Place { case newTab, newWindow, current }
 
-    func typeAddress(_ address: String, url: URL, in browser: Browser, place: Place = .current) {
+    /// `afterOpen` runs once the website has been opened (e.g. to then search inside the page).
+    func typeAddress(_ address: String, url: URL, in browser: Browser, place: Place = .current,
+                     afterOpen: (() -> Void)? = nil) {
+        let opened: () -> Void = { if let afterOpen { DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: afterOpen) } }
         guard let appURL = browser.appURL else { return }
         let alreadyRunning = NSRunningApplication.runningApplications(withBundleIdentifier: browser.bundleID)
             .contains { !$0.isTerminated }
@@ -575,13 +578,13 @@ final class KeyboardController {
         Self.waitUntilFront(browser, until: Date().addingTimeInterval(6)) { inFront in
             guard inFront else {
                 // Couldn't get the browser in front: open the website in it directly.
-                _ = browser.open(url)
+                _ = browser.open(url); opened()
                 return
             }
             // A freshly opened browser needs a moment for its window to be ready.
             let settle = alreadyRunning ? 0.35 : 1.5
             DispatchQueue.main.asyncAfter(deadline: .now() + settle) {
-                guard Self.isFront(browser) else { _ = browser.open(url); return }
+                guard Self.isFront(browser) else { _ = browser.open(url); opened(); return }
                 // You asked for a new tab or window: open it first (that's the only time OLED uses a shortcut).
                 var wait = 0.0
                 switch place {
@@ -592,17 +595,18 @@ final class KeyboardController {
                 DispatchQueue.main.asyncAfter(deadline: .now() + wait) {
                     // Click straight into the address bar (no shortcut) and clear it.
                     guard Self.isFront(browser), AddressBar.focus(in: browser) else {
-                        _ = browser.open(url) // couldn't reach the address bar: open the site directly
+                        _ = browser.open(url); opened() // couldn't reach the address bar: open the site directly
                         return
                     }
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-                        guard Self.isFront(browser) else { _ = browser.open(url); return }
+                        guard Self.isFront(browser) else { _ = browser.open(url); opened(); return }
                         DispatchQueue.global(qos: .userInitiated).async {
                             Self.typeNow(address)
                             usleep(200_000)
                             DispatchQueue.main.async {
                                 Self.post(key: 36, flags: []) // Return, to go to the site
                                 Self.makeSureItOpened(url, in: browser)
+                                opened()
                             }
                         }
                     }
