@@ -42,7 +42,7 @@ enum VideoPicker {
         while !queue.isEmpty, visited < 6000 {
             let (el, depth) = queue.removeFirst()
             visited += 1
-            if PageSearch.text(el, kAXRoleAttribute) == kAXLinkRole as String {
+            if PageSearch.text(el, kAXRoleAttribute) == "AXLink" {
                 let url = urlString(of: el)
                 let text = label(of: el)
                 let looksLikeVideo = videoPathHints.contains { url.lowercased().contains($0) }
