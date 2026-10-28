@@ -57,6 +57,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 struct ContentView: View {
     @EnvironmentObject var app: AppState
+    @ObservedObject private var theme = ThemeStore.shared
 
     var body: some View {
         Group {
@@ -67,5 +68,7 @@ struct ContentView: View {
             }
         }
         .background(Theme.background)
+        .tint(Theme.accent)
+        .id(theme.current.id) // redraw the whole window in the new theme straight away
     }
 }

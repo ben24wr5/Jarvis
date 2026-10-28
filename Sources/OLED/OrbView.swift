@@ -87,6 +87,7 @@ struct OrbView: View {
         let s = min(size.width, size.height) / 420
         let c = CGPoint(x: size.width / 2, y: size.height / 2)
         let t = clock.t
+        let P = Theme.p
         let alive = 0.25 + 0.75 * lv // a faint spark field is always there; the voice brings it to life
 
         // Sparks
@@ -98,13 +99,13 @@ struct OrbView: View {
             let twinkle = 0.5 + 0.5 * sin(t * 3 + sp.phase * 3)
             let d = sp.size * s * (1 + lv)
             context.fill(Path(ellipseIn: CGRect(x: x - d / 2, y: y - d / 2, width: d, height: d)),
-                         with: .color(Color(hex: 0x8FE2FF, opacity: min(1, alive * (0.35 + 0.55 * twinkle)))))
+                         with: .color(Color(hex: P.secondary, opacity: min(1, alive * (0.35 + 0.55 * twinkle)))))
         }
 
         // Rays, only when there's a voice
         guard lv > 0.04 else { return }
         var ctx = context
-        ctx.addFilter(.shadow(color: Color(hex: 0x2FB4FF), radius: 6 * s))
+        ctx.addFilter(.shadow(color: Color(hex: P.primary), radius: 6 * s))
         for (i, angle) in clock.rays.enumerated() {
             let a = angle + t * 0.4 * (i % 2 == 0 ? 1 : -1)
             let flicker = 0.5 + 0.5 * sin(t * 13 + Double(i) * 1.7)
@@ -112,7 +113,7 @@ struct OrbView: View {
             var ray = Path()
             ray.move(to: CGPoint(x: c.x + CGFloat(inner * Foundation.cos(a)), y: c.y + CGFloat(inner * Foundation.sin(a))))
             ray.addLine(to: CGPoint(x: c.x + CGFloat(outer * Foundation.cos(a)), y: c.y + CGFloat(outer * Foundation.sin(a))))
-            ctx.stroke(ray, with: .color(Color(hex: 0x7FD8FF, opacity: min(1, lv * flicker * 1.2))),
+            ctx.stroke(ray, with: .color(Color(hex: P.tertiary, opacity: min(1, lv * flicker * 1.2))),
                        style: StrokeStyle(lineWidth: 1.4 * s, lineCap: .round))
         }
     }
@@ -120,6 +121,7 @@ struct OrbView: View {
     private func draw(in context: inout GraphicsContext, size: CGSize, look: Look) {
         let s = min(size.width, size.height) / 420 * (1 + 0.08 * clock.level)
         let c = CGPoint(x: size.width / 2, y: size.height / 2)
+        let P = Theme.p
         let b = look.brightness * (1 + 0.5 * clock.level)
         let t = clock.t
 
@@ -133,10 +135,10 @@ struct OrbView: View {
         // Soft glow behind everything
         context.fill(circle(176), with: .radialGradient(
             Gradient(colors: [
-                color(0x7FE0FF, 0.45, boost: b),
-                color(0x2FB4FF, 0.4, boost: b),
-                color(0x0A4E9A, 0.16, boost: b),
-                Color(hex: 0x021A3A, opacity: 0)
+                color(P.light, 0.45, boost: b),
+                color(P.primary, 0.4, boost: b),
+                color(P.deep, 0.16, boost: b),
+                Color(hex: P.bgMid, opacity: 0)
             ]),
             center: c, startRadius: 0, endRadius: 176 * s))
 
@@ -146,8 +148,8 @@ struct OrbView: View {
             let opacity = phase < 0.35 ? phase / 0.35 : 1 - (phase - 0.35) / 0.65 * 0.65
             let scale = phase < 0.35 ? 0.6 + 0.45 * (phase / 0.35) : 1.05 - 0.05 * ((phase - 0.35) / 0.65)
             var ctx = context
-            ctx.addFilter(.shadow(color: Color(hex: 0x2FB4FF), radius: 14 * s))
-            ctx.stroke(circle(170 * scale), with: .color(Color(hex: 0x9FE6FF, opacity: opacity)), lineWidth: 4 * s)
+            ctx.addFilter(.shadow(color: Color(hex: P.primary), radius: 14 * s))
+            ctx.stroke(circle(170 * scale), with: .color(Color(hex: P.light, opacity: opacity)), lineWidth: 4 * s)
         }
 
         // Ripples while listening / speaking
@@ -155,7 +157,7 @@ struct OrbView: View {
             for delay in [0.0, 0.8] {
                 let phase = ((t + delay).truncatingRemainder(dividingBy: 1.6)) / 1.6
                 let scale = 0.72 + 0.53 * phase
-                context.stroke(circle(160 * scale), with: .color(Color(hex: 0x5CC8FF, opacity: 0.7 * (1 - phase))), lineWidth: 2 * s)
+                context.stroke(circle(160 * scale), with: .color(Color(hex: P.secondary, opacity: 0.7 * (1 - phase))), lineWidth: 2 * s)
             }
         }
 
@@ -172,7 +174,7 @@ struct OrbView: View {
                 let rd = Double(r)
                 arc.move(to: CGPoint(x: rd * Foundation.cos(a0), y: rd * Foundation.sin(a0)))
                 arc.addArc(center: .zero, radius: r, startAngle: .degrees(start), endAngle: .degrees(end), clockwise: false)
-                ctx.stroke(arc, with: .color(color(0x3FB8FF, 0.7, boost: b)),
+                ctx.stroke(arc, with: .color(color(P.tertiary, 0.7, boost: b)),
                            style: StrokeStyle(lineWidth: 1.6 * s, lineCap: .round))
             }
         }
@@ -180,12 +182,12 @@ struct OrbView: View {
         // Glass sphere
         do {
             context.fill(circle(128), with: .radialGradient(
-                Gradient(colors: [Color(hex: 0x0D3C78, opacity: 0.55), Color(hex: 0x03142E, opacity: 0.2)]),
+                Gradient(colors: [Color(hex: P.deep, opacity: 0.55), Color(hex: P.bgMid, opacity: 0.2)]),
                 center: CGPoint(x: c.x - 18 * s, y: c.y - 26 * s), startRadius: 0, endRadius: 150 * s))
             var ctx = context
-            ctx.addFilter(.shadow(color: Color(hex: 0x2A9CFF, opacity: min(1, 0.9 * b)), radius: 10 * s))
-            ctx.stroke(circle(128), with: .color(color(0x38B4FF, 1, boost: b)), lineWidth: 3 * s)
-            context.stroke(circle(128), with: .color(Color(hex: 0x8FE2FF, opacity: 0.6)), lineWidth: 1 * s)
+            ctx.addFilter(.shadow(color: Color(hex: P.primary, opacity: min(1, 0.9 * b)), radius: 10 * s))
+            ctx.stroke(circle(128), with: .color(color(P.primary, 1, boost: b)), lineWidth: 3 * s)
+            context.stroke(circle(128), with: .color(Color(hex: P.light, opacity: 0.6)), lineWidth: 1 * s)
         }
 
         func dashedRing(radius: Double, width: Double, dash: [CGFloat], hex: UInt32, opacity: Double, angle: Double) {
@@ -197,11 +199,11 @@ struct OrbView: View {
                        style: StrokeStyle(lineWidth: width * s, dash: dash.map { $0 * s }))
         }
 
-        dashedRing(radius: 104, width: 8, dash: [60, 30, 14, 40, 90, 26], hex: 0x2AA6FF, opacity: 0.85, angle: clock.p1)
-        dashedRing(radius: 80, width: 5, dash: [70, 22, 30, 18], hex: 0x56C6FF, opacity: 0.9, angle: clock.p3)
-        context.stroke(circle(66), with: .color(color(0x2F8FE0, 0.8, boost: b)), lineWidth: 1.2 * s)
-        dashedRing(radius: 50, width: 3, dash: [20, 10, 40, 12], hex: 0x7FD8FF, opacity: 0.85, angle: clock.p2)
-        context.stroke(circle(36), with: .color(color(0x56C6FF, 0.7, boost: b)), lineWidth: 1 * s)
+        dashedRing(radius: 104, width: 8, dash: [60, 30, 14, 40, 90, 26], hex: P.primary, opacity: 0.85, angle: clock.p1)
+        dashedRing(radius: 80, width: 5, dash: [70, 22, 30, 18], hex: P.secondary, opacity: 0.9, angle: clock.p3)
+        context.stroke(circle(66), with: .color(color(P.tertiary, 0.8, boost: b)), lineWidth: 1.2 * s)
+        dashedRing(radius: 50, width: 3, dash: [20, 10, 40, 12], hex: P.tertiary, opacity: 0.85, angle: clock.p2)
+        context.stroke(circle(36), with: .color(color(P.secondary, 0.7, boost: b)), lineWidth: 1 * s)
 
         // Pulsing core
         let pulse = 0.5 + 0.5 * sin(2 * Double.pi * t / look.pulsePeriod)
@@ -209,12 +211,12 @@ struct OrbView: View {
         do {
             var ctx = context
             ctx.addFilter(.blur(radius: 6 * s))
-            ctx.fill(circle(26 * coreScale), with: .color(Color(hex: 0x2FB4FF, opacity: min(1, (0.35 + 0.25 * pulse) * b))))
+            ctx.fill(circle(26 * coreScale), with: .color(Color(hex: P.primary, opacity: min(1, (0.35 + 0.25 * pulse) * b))))
         }
         do {
             var ctx = context
-            ctx.addFilter(.shadow(color: Color(hex: 0x5CC8FF), radius: 12 * s))
-            ctx.fill(circle(13 * coreScale), with: .color(Color(hex: 0xBFF0FF)))
+            ctx.addFilter(.shadow(color: Color(hex: P.secondary), radius: 12 * s))
+            ctx.fill(circle(13 * coreScale), with: .color(Color(hex: P.light)))
         }
     }
 }

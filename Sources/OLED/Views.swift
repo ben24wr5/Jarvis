@@ -53,10 +53,10 @@ struct CommandField: View {
                 .foregroundColor(Theme.muted)
                 .accessibilityHidden(true)
             TextField("", text: $text, prompt: Text("Type anything you'd say to OLED, then press Return")
-                .foregroundColor(Color(hex: 0x5F86A0)))
+                .foregroundColor(Theme.muted))
                 .textFieldStyle(.plain)
                 .font(.system(size: 16))
-                .foregroundColor(Color(hex: 0xDFF5FF))
+                .foregroundColor(Theme.title)
                 .focused($focused)
                 .onSubmit(send)
                 .accessibilityLabel("Type a command or question")
@@ -71,9 +71,9 @@ struct CommandField: View {
         }
         .padding(.horizontal, 16)
         .frame(height: 46)
-        .background(RoundedRectangle(cornerRadius: 23).fill(Color(hex: 0x081E3C, opacity: 0.55)))
+        .background(RoundedRectangle(cornerRadius: 23).fill(Theme.fieldFill))
         .overlay(RoundedRectangle(cornerRadius: 23)
-            .stroke(focused ? Theme.accent.opacity(0.9) : Color(hex: 0x12385C), lineWidth: 1))
+            .stroke(focused ? Theme.accent.opacity(0.9) : Theme.fieldBorder, lineWidth: 1))
         .shadow(color: focused ? Theme.accent.opacity(0.35) : .clear, radius: 10)
     }
 
@@ -136,13 +136,13 @@ struct SetupView: View {
             Text("SETUP · STEP \(step) OF 2")
                 .font(.system(size: 14, weight: .semibold))
                 .tracking(5)
-                .foregroundColor(Color(hex: 0x5F93B3))
+                .foregroundColor(Theme.muted)
 
             VStack(spacing: 14) {
                 Text(step == 1 ? "Let OLED hear you" : "Let OLED work your Mac")
                     .font(.system(size: 40, weight: .light))
                     .tracking(2)
-                    .foregroundColor(Color(hex: 0x8FDCFF))
+                    .foregroundColor(Theme.title)
                     .shadow(color: Theme.accent.opacity(0.45), radius: 12)
                 Text(step == 1
                      ? "OLED needs your microphone so it can hear its name and your commands. Your Mac will ask you to allow it."
@@ -160,11 +160,11 @@ struct SetupView: View {
                     Text("3.  Switch it on, then come back here")
                 }
                 .font(.system(size: 17))
-                .foregroundColor(Color(hex: 0xBCDCEE))
+                .foregroundColor(Theme.soft)
                 .padding(.vertical, 16)
                 .padding(.horizontal, 26)
-                .background(RoundedRectangle(cornerRadius: 14).fill(Color(hex: 0x081E3C, opacity: 0.45)))
-                .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color(hex: 0x12385C), lineWidth: 1))
+                .background(RoundedRectangle(cornerRadius: 14).fill(Theme.fieldFill))
+                .overlay(RoundedRectangle(cornerRadius: 14).stroke(Theme.fieldBorder, lineWidth: 1))
             }
 
             VStack(spacing: 10) {
@@ -226,6 +226,7 @@ struct SetupView: View {
 
 struct SettingsView: View {
     @EnvironmentObject var app: AppState
+    @ObservedObject private var theme = ThemeStore.shared
     @State private var robot = UserDefaults.standard.object(forKey: Speaker.robotKey) as? Double ?? 0.65
     @State private var voiceID = Speaker.selectedVoice?.identifier ?? ""
     @State private var homeTown = Weather.homeTown ?? ""
@@ -310,8 +311,40 @@ struct SettingsView: View {
                     .onChange(of: openAtLogin) { on in LaunchAtLogin.wanted = on }
             }
 
-            Section("Version") {
+            Section("Themes") {
+                ForEach(Palette.all) { palette in
+                    Button {
+                        theme.current = palette
+                    } label: {
+                        HStack(spacing: 12) {
+                            HStack(spacing: -6) {
+                                ForEach([palette.primary, palette.secondary, palette.tertiary, palette.light], id: \.self) { hex in
+                                    Circle()
+                                        .fill(Color(hex: hex))
+                                        .frame(width: 18, height: 18)
+                                        .overlay(Circle().stroke(Color.black.opacity(0.35), lineWidth: 1))
+                                }
+                            }
+                            .padding(6)
+                            .background(RoundedRectangle(cornerRadius: 8).fill(Color(hex: palette.bgCenter)))
+                            .accessibilityHidden(true)
+                            Text(palette.name)
+                                .foregroundColor(.primary)
+                            Spacer()
+                            if theme.current.id == palette.id {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundColor(Color(hex: palette.primary))
+                                    .accessibilityLabel("Selected")
+                            }
+                        }
+                        .contentShape(Rectangle())
+                        .frame(minHeight: 32)
+                    }
+                    .buttonStyle(.plain)
+                }
                 Text("Version \(Updater.currentBuild) · updates install automatically")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
             }
 
             Section("Permissions") {
@@ -320,7 +353,11 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
+        .background(Theme.background)
+        .tint(Theme.accent)
         .frame(width: 560, height: 760)
+        .id(theme.current.id) // re-colour the Settings window straight away too
     }
 
     private func statusRow(_ name: String, ok: Bool) -> some View {
