@@ -114,21 +114,29 @@ enum PageSearch {
 
     /// Searches inside the page open in `browser`. Waits up to `wait` seconds for the page (and its
     /// search box) to load — used straight after opening a website.
-    static func run(_ query: String, in browser: Browser, wait: TimeInterval = 2) {
+    /// `play`: after the results appear, click the video that best matches the search and make sure it plays.
+    static func run(_ query: String, in browser: Browser, wait: TimeInterval = 2, play: Bool = false) {
         let deadline = Date().addingTimeInterval(wait)
         func attempt() {
             if let field = findSearchField(in: browser) {
                 typeInto(field, query: query, browser: browser)
+                if play { VideoPicker.pickAfterResults(matching: query, in: browser) }
                 return
             }
             if Date() < deadline {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { attempt() }
             } else {
                 goToResultsPage(for: query, in: browser)
+                if play { VideoPicker.pickAfterResults(matching: query, in: browser) }
             }
         }
         bringForward(browser) { attempt() }
     }
+
+    /// Exposed for the video picker.
+    static func pageArea(of browser: Browser) -> AXUIElement? { webArea(of: browser) }
+    static func text(_ el: AXUIElement, _ attr: String) -> String { string(el, attr) }
+    static func kids(_ el: AXUIElement) -> [AXUIElement] { children(of: el) }
 
     // MARK: Finding the search box
 

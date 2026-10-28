@@ -41,7 +41,9 @@ final class SpeechListener {
         SFSpeechRecognizer(),
         SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
     ].compactMap { $0 }
-    private var useOnDevice = true
+    /// Apple's online recogniser is noticeably more accurate (e.g. "iPhone" instead of "OF"), so it's
+    /// tried first; the offline one is used if the online one isn't available.
+    private var useOnDevice = false
 
     /// British English if it's ready, otherwise the Mac's own language, otherwise US English.
     private func currentRecognizer() -> SFSpeechRecognizer? {
@@ -230,6 +232,20 @@ final class SpeechListener {
         return d.contains("canceled") || d.contains("cancelled") || d.contains("no speech")
     }
 
+    /// Words Apple's recogniser should expect, so names aren't misheard ("iPhone", not "OF").
+    static let expectedWords: [String] = [
+        "OLED", "Oled", "O.L.E.D.", "Hey OLED", "Oh LED",
+        "Firefox", "Safari", "open", "press", "type", "go to", "search for", "search bar", "new tab", "new window",
+        "and then enter", "weather", "play", "pause",
+        "iPhone", "iPhone Pro", "iPhone Pro Max", "iPhone Air", "iPad", "iPad Pro", "MacBook", "MacBook Pro", "MacBook Air",
+        "iMac", "Mac mini", "AirPods", "AirPods Pro", "Apple Watch", "Vision Pro", "iOS", "macOS", "Siri",
+        "YouTube", "Netflix", "Spotify", "TikTok", "Instagram", "WhatsApp", "Snapchat", "Facebook", "Twitch", "Reddit",
+        "Amazon", "eBay", "Argos", "Wikipedia", "BBC", "iPlayer", "ITVX", "Disney Plus", "Prime Video", "Crunchyroll",
+        "Minecraft", "Roblox", "Fortnite", "PlayStation", "PS5", "Xbox", "Nintendo", "Nintendo Switch", "GTA", "FIFA",
+        "EA FC", "Call of Duty", "Pokémon", "Mario", "Zelda", "Samsung", "Galaxy", "Pixel", "Google", "ChatGPT", "Claude",
+        "MrBeast", "Duo", "Pro Max", "unboxing", "highlights", "trailer", "gameplay", "tutorial", "review"
+    ]
+
     // MARK: - Listening sessions
 
     /// Starts listening. Returns false (and calls `onBlocked`) when something stops it working.
@@ -292,8 +308,7 @@ final class SpeechListener {
         // On-device first (works even with Siri/Dictation off); online if the on-device model fails.
         request.requiresOnDeviceRecognition = useOnDevice && recognizer.supportsOnDeviceRecognition
         if #available(macOS 13, *) { request.addsPunctuation = false }
-        request.contextualStrings = ["OLED", "Oled", "O.L.E.D.", "O L E D", "Hey OLED", "Oh LED",
-                                     "Firefox", "Safari", "open", "press", "type", "go to", "search for", "weather"]
+        request.contextualStrings = Self.expectedWords
         self.request = request
 
         task = recognizer.recognitionTask(with: request) { [weak self] result, error in

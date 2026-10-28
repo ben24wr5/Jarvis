@@ -201,6 +201,9 @@ final class CommandRouter {
             reply(Reply(text: "Okay.", expectsAnswer: false)); return
         }
 
+        // 1b1. Videos on the page: "play the first video", "click on the Minecraft video", "pause"
+        if let answer = videoCommand(politeStripped) { reply(answer); return }
+
         // 1b2. Searching inside a website's own search box (YouTube, BBC, Amazon, Netflix…)
         if let answer = siteSearch(politeStripped) { reply(answer); return }
 
@@ -390,10 +393,10 @@ final class CommandRouter {
     /// `place`: new tab / new window when you asked for one; nil means "you didn't say" — then OLED
     /// uses the current tab only if it's empty, and otherwise asks "new tab or new window?".
     private func openSite(_ url: URL, name: String, in browser: Browser, typed: String? = nil,
-                          place: KeyboardController.Place? = nil, thenSearch: String? = nil) -> Reply {
+                          place: KeyboardController.Place? = nil, thenSearch: String? = nil, thenPlay: Bool = false) -> Reply {
         clearPending()
-        // "…and search for X": once the site is open, type X into the site's own search box.
-        let afterOpen: (() -> Void)? = thenSearch.map { query in { PageSearch.run(query, in: browser, wait: 12) } }
+        // "…and search for X": once the site is open, type X into the site's own search box (and play it if asked).
+        let afterOpen: (() -> Void)? = thenSearch.map { query in { PageSearch.run(query, in: browser, wait: 12, play: thenPlay) } }
         guard browser.appURL != nil else {
             return Reply(text: "\(browser.rawValue) doesn't seem to be installed on this Mac.", expectsAnswer: false)
         }
@@ -415,7 +418,7 @@ final class CommandRouter {
             Website.resolve(url, completion: go)
         }
         let placeText = finalPlace == .newTab ? " in a new tab" : (finalPlace == .newWindow ? " in a new window" : "")
-        let searchText = thenSearch.map { ", then searching for \($0)" } ?? ""
+        let searchText = thenSearch.map { thenPlay ? ", then playing \($0)" : ", then searching for \($0)" } ?? ""
         return Reply(text: "Opening \(name) in \(browser.rawValue)\(placeText)\(searchText).", expectsAnswer: false)
     }
 
@@ -426,6 +429,7 @@ final class CommandRouter {
         pendingPlace = nil
         pendingBrowser = nil
         pendingFollowUp = nil
+        pendingFollowPlay = false
         webStage = .browser
         browserAsks = 0
     }
@@ -441,10 +445,13 @@ final class CommandRouter {
 
     private var pendingFollowUp: String?
 
+    private var pendingFollowPlay = false
+
     private func startWeb(_ url: URL, name: String, typed: String?, browser: Browser?, place: KeyboardController.Place?,
-                          thenSearch: String? = nil) -> Reply {
+                          thenSearch: String? = nil, thenPlay: Bool = false) -> Reply {
         clearPending()
         pendingFollowUp = thenSearch
+        pendingFollowPlay = thenPlay
         pendingURL = url
         pendingName = name
         pendingTyped = typed
@@ -460,7 +467,7 @@ final class CommandRouter {
             return Reply(text: "Do you want me to open it in Safari or Firefox?", expectsAnswer: true)
         }
         if let place = pendingPlace {
-            return openSite(url, name: pendingName, in: browser, typed: pendingTyped, place: place, thenSearch: pendingFollowUp)
+            return openSite(url, name: pendingName, in: browser, typed: pendingTyped, place: place, thenSearch: pendingFollowUp, thenPlay: pendingFollowPlay)
         }
         webStage = .existingTab
         return Reply(text: "Do you already have a tab open with another website?", expectsAnswer: true)
@@ -554,72 +561,129 @@ final class CommandRouter {
         return s.trimmingCharacters(in: .whitespaces)
     }
 
-    /// Understands:
-    ///  • "type cats in the search bar" / "search for cats" (while a website is open) → that site's search box
-    ///  • "search YouTube for cats", "search for cats on BBC" → that site's search box (opening the site if needed)
-    ///  • "go to YouTube and search for football", "open a new tab in Safari, go to Amazon and search for shoes"
+    struct SearchRequest {
+        var query: String
+        var site: String?
+        var play: Bool
+        var mentionsSearchBox: Bool
+        var verb: String
+    }
+
+    /// Pulls out ONLY the words to search for — no command words, no "enter", no site name:
+    ///  "in YouTube type Minecraft" → Minecraft · "type iPhone Duo and then enter" → iPhone Duo
+    ///  "go to YouTube and play Minecraft" → Minecraft (site YouTube, then play it)
+    static func searchRequest(_ t: String) -> SearchRequest? {
+        var s = " " + t.lowercased().replacingOccurrences(of: ",", with: " ").replacingOccurrences(of: "'s ", with: " ") + " "
+        s = s.split(separator: " ").joined(separator: " ")
+        s = " " + s + " "
+        let verbs = [" search", " type ", " look for ", " find ", " play ", " write ", " look up ", " watch "]
+        guard let verb = verbs.first(where: { s.contains($0) }) else { return nil }
+        let play = s.hasPrefix(" play ") || s.hasPrefix(" watch ")
+            || s.range(of: #" (and |then )+(play|click|open|watch)( it| the (first )?(video|one))? "#, options: .regularExpression) != nil
+        let mentionsBox = s.range(of: #" search (bar|box|field) "#, options: .regularExpression) != nil
+
+        // Which website (if any), and remove it from the words.
+        var site: String?
+        for name in PageSearch.siteNames.keys.sorted(by: { $0.count > $1.count }) {
+            let escaped = NSRegularExpression.escapedPattern(for: name)
+            let pattern = #" (?:(?:on|in|into|at|from|to|go to|open|search|inside) )?(?:the )?"# + escaped
+                + #"(?: website| site| app)?(?: search(?: bar| box| field)?)? "#
+            if let r = s.range(of: pattern, options: .regularExpression) {
+                site = name
+                s.replaceSubrange(r, with: " ")
+                break
+            }
+        }
+        // Remove "and then press enter", "and play it", "in the search bar"…
+        for pattern in [#" (?:and )?(?:then )?(?:press |hit |click )?(?:enter|return)(?: key)?(?= |$)"#,
+                        #" (?:and )?(?:then )?(?:play|click on|click|open|watch)(?: it| that| the (?:first )?(?:video|one|result))? $"#,
+                        #" (?:in|into|on) (?:the |its )?search(?: bar| box| field)? "#, #" the search(?: bar| box| field)? "#,
+                        #" search(?: bar| box| field) "#, #" please "#, #" for me "#] {
+            s = s.replacingOccurrences(of: pattern, with: " ", options: .regularExpression)
+        }
+        s = s.split(separator: " ").joined(separator: " ")
+        var changed = true
+        while changed {
+            changed = false
+            for lead in ["and ", "then ", "go to ", "open ", "search for ", "search ", "type in ", "type out ", "type ",
+                         "write ", "look for ", "look up ", "find me ", "find ", "play ", "watch ", "for ", "in ", "into ",
+                         "on ", "it ", "the video ", "video of ", "a video of ", "videos of ", "video "] where s.hasPrefix(lead) {
+                s.removeFirst(lead.count)
+                changed = true
+            }
+        }
+        for tail in [" and", " then", " in", " on", " it", " video", " videos", " please"] {
+            while s.hasSuffix(tail) { s.removeLast(tail.count) }
+        }
+        let query = s.trimmingCharacters(in: .whitespaces)
+        guard !query.isEmpty else { return nil }
+        return SearchRequest(query: query, site: site, play: play, mentionsSearchBox: mentionsBox,
+                             verb: verb.trimmingCharacters(in: .whitespaces))
+    }
+
+    /// Searching inside a website's own search box (and playing a video if asked).
     private func siteSearch(_ t: String) -> Reply? {
+        guard let req = Self.searchRequest(t) else { return nil }
         let browserNow = PageSearch.activeBrowser(lastApp: keyboard.lastExternalApp)
+        let s = " " + t + " "
+        let saidBrowser: Browser? = s.contains(" firefox") || s.contains(" fire fox") ? .firefox : (s.contains(" safari") ? .safari : nil)
+        let saidPlace: KeyboardController.Place? = Self.placeMentioned(in: t)
+        let action = req.play ? "Playing" : "Searching for"
 
-        // "type cats in the search bar"
-        if let m = Self.match(t, #"^(?:type|put|write|enter)\s+(.+?)\s+(?:in|into|on)\s+(?:the\s+)?(?:search(?:\s*(?:bar|box|field))?|searchbar)$"#),
-           let browser = browserNow {
-            let query = Self.cleanQuery(m[0])
-            guard AccessibilityPermission.isGranted else { return needAccessibility() }
-            PageSearch.run(query, in: browser)
-            return Reply(text: "Searching for \(query).", expectsAnswer: false)
-        }
-
-        // "go to YouTube and search for football"
-        if let m = Self.match(t, #"^(.+?)\s+(?:and\s+)?(?:then\s+)?(?:search|look)\s+(?:for\s+|up\s+)?(.+)$"#),
-           Self.isCommand(m[0]) || m[0].hasPrefix("new ") || m[0].hasPrefix("a new "),
-           !m[0].hasPrefix("search") {
-            let openPart = m[0]
-            let query = Self.cleanQuery(m[1])
-            var site: String?
-            var browser: Browser?
-            var place: KeyboardController.Place?
-            if let plan = Self.parseWeb(openPart) {
-                site = plan.site; browser = plan.browser; place = plan.place
-            } else {
-                var rest = openPart
-                for verb in Self.openVerbs where rest.hasPrefix(verb) { rest.removeFirst(verb.count); break }
-                site = rest.trimmingCharacters(in: .whitespaces)
-            }
-            if let site, !site.isEmpty, !query.isEmpty,
-               PageSearch.siteAddress(for: site) != nil || browser != nil || place != nil || site.contains("."),
-               let url = Website.url(from: PageSearch.siteAddress(for: site) ?? site, force: true) {
-                return startWeb(url, name: Website.displayName(for: site), typed: nil, browser: browser, place: place,
-                                thenSearch: query)
-            }
-        }
-
-        // "search YouTube for cats" / "search for cats on YouTube"
-        var query: String?, site: String?
-        if let m = Self.match(t, #"^search\s+(.+?)\s+for\s+(.+)$"#), PageSearch.siteAddress(for: m[0]) != nil {
-            site = m[0]; query = Self.cleanQuery(m[1])
-        } else if let m = Self.match(t, #"^(?:search|look)\s+(?:for\s+|up\s+)?(.+)\s+(?:on|in|at)\s+(.+)$"#),
-                  PageSearch.siteAddress(for: m[1]) != nil {
-            site = m[1]; query = Self.cleanQuery(m[0])
-        }
-        if let site, let query, !query.isEmpty, let address = PageSearch.siteAddress(for: site) {
+        if let site = req.site, let address = PageSearch.siteAddress(for: site) {
             let root = address.split(separator: ".").suffix(2).joined(separator: ".")
-            if let browser = browserNow, let host = PageSearch.currentPageHost(in: browser), host.hasSuffix(root) {
+            if saidPlace == nil, let browser = saidBrowser ?? browserNow,
+               let host = PageSearch.currentPageHost(in: browser), host.hasSuffix(root) {
                 guard AccessibilityPermission.isGranted else { return needAccessibility() }
-                PageSearch.run(query, in: browser)
-                return Reply(text: "Searching \(Website.displayName(for: site)) for \(query).", expectsAnswer: false)
+                PageSearch.run(req.query, in: browser, play: req.play)
+                return Reply(text: "\(action) \(req.query).", expectsAnswer: false)
             }
             guard let url = Website.url(from: address, force: true) else { return nil }
-            return startWeb(url, name: Website.displayName(for: site), typed: nil, browser: nil, place: nil, thenSearch: query)
+            return startWeb(url, name: Website.displayName(for: site), typed: nil, browser: saidBrowser, place: saidPlace,
+                            thenSearch: req.query, thenPlay: req.play)
         }
 
-        // "search for cats" while a website with a search box is open → that website's search box
-        if let m = Self.match(t, #"^(?:search|look)\s+(?:for\s+)?(.+)$"#), let browser = browserNow,
-           AccessibilityPermission.isGranted, PageSearch.findSearchField(in: browser) != nil {
-            let q = Self.cleanQuery(m[0])
-            guard !q.isEmpty else { return nil }
-            PageSearch.run(q, in: browser)
-            return Reply(text: "Searching for \(q).", expectsAnswer: false)
+        // No website named: use the website that's open now, if it has a search box.
+        if let browser = browserNow, AccessibilityPermission.isGranted,
+           req.mentionsSearchBox || ["search", "type", "look for", "find", "play", "watch", "write"].contains(req.verb),
+           PageSearch.findSearchField(in: browser) != nil {
+            PageSearch.run(req.query, in: browser, play: req.play)
+            return Reply(text: "\(action) \(req.query).", expectsAnswer: false)
+        }
+        // "play Minecraft" with no website open: YouTube.
+        if req.play, req.verb == "play" || req.verb == "watch",
+           let url = Website.url(from: "youtube.com", force: true) {
+            return startWeb(url, name: "YouTube", typed: nil, browser: saidBrowser, place: saidPlace,
+                            thenSearch: req.query, thenPlay: true)
+        }
+        return nil
+    }
+
+    /// Clicking videos on the page, and play/pause.
+    private func videoCommand(_ t: String) -> Reply? {
+        guard let browser = PageSearch.activeBrowser(lastApp: keyboard.lastExternalApp) else { return nil }
+        let playWords = ["play", "resume", "play the video", "play video", "unpause", "play it", "carry on playing", "start the video"]
+        let pauseWords = ["pause", "pause the video", "pause video", "pause it", "stop the video", "stop video", "hold on"]
+        if playWords.contains(t) || pauseWords.contains(t) {
+            guard AccessibilityPermission.isGranted else { return needAccessibility() }
+            let play = playWords.contains(t)
+            if VideoPicker.setPlaying(play, in: browser) { return Reply(text: play ? "Playing." : "Paused.", expectsAnswer: false) }
+            return Reply(text: "I can't find a video player on this page.", expectsAnswer: false)
+        }
+        let ordinals: [String: Int] = ["first": 1, "1st": 1, "second": 2, "2nd": 2, "third": 3, "3rd": 3, "fourth": 4, "4th": 4,
+                                       "fifth": 5, "5th": 5, "sixth": 6, "seventh": 7, "eighth": 8, "ninth": 9, "tenth": 10, "top": 1]
+        if let m = Self.match(t, #"^(?:play|click(?: on)?|open|watch|choose|pick|select) (?:the )?(\w+) (?:video|one|result|link)$"#),
+           let n = ordinals[m[0]] {
+            guard AccessibilityPermission.isGranted else { return needAccessibility() }
+            return VideoPicker.clickVideo(named: nil, number: n, in: browser)
+                ? Reply(text: "Playing the \(m[0]) video.", expectsAnswer: false)
+                : Reply(text: "I can't find that video on this page.", expectsAnswer: false)
+        }
+        if let m = Self.match(t, #"^(?:click(?: on)?|open|play|watch|choose|pick|select) (?:the )?(?:video|one)(?: called| named| about| of| with)? (.+)$"#) {
+            guard AccessibilityPermission.isGranted else { return needAccessibility() }
+            return VideoPicker.clickVideo(named: m[0], number: nil, in: browser)
+                ? Reply(text: "Playing it.", expectsAnswer: false)
+                : Reply(text: "I can't find that video on this page.", expectsAnswer: false)
         }
         return nil
     }
