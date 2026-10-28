@@ -28,6 +28,11 @@ struct MainView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        .overlay(alignment: .topTrailing) {
+            SettingsGearButton()
+                .padding(.top, 18)
+                .padding(.trailing, 22)
+        }
         .background(Theme.background)
         .onAppear { app.startAssistant() }
     }
@@ -43,6 +48,34 @@ struct OpenSettingsButton: View {
                 NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
             }
         }
+    }
+}
+
+/// The glowing gear in the top-right corner that opens Settings.
+struct SettingsGearButton: View {
+    @State private var hovering = false
+
+    private var gear: some View {
+        Image(systemName: "gearshape")
+            .font(.system(size: 20, weight: .light))
+            .foregroundColor(hovering ? Theme.title : Theme.accent.opacity(0.8))
+            .shadow(color: Theme.accent.opacity(hovering ? 0.9 : 0.5), radius: hovering ? 8 : 4)
+            .frame(width: 44, height: 44)
+            .contentShape(Rectangle())
+    }
+
+    var body: some View {
+        Group {
+            if #available(macOS 14, *) {
+                SettingsLink { gear }
+            } else {
+                Button { NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil) } label: { gear }
+            }
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .help("Settings")
+        .accessibilityLabel("Settings")
     }
 }
 
