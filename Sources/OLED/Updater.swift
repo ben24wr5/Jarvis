@@ -17,12 +17,22 @@ final class Updater {
         Int(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "") ?? 0
     }
 
+    /// Checks for a new version every 2 minutes (and whenever OLED comes to the front), so updates
+    /// arrive by themselves shortly after they're published — no need to visit Settings.
     func startAutomaticChecks() {
         DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in self?.check(userAsked: false) }
-        timer = Timer.scheduledTimer(withTimeInterval: 3 * 60 * 60, repeats: true) { [weak self] _ in
+        timer = Timer.scheduledTimer(withTimeInterval: 120, repeats: true) { [weak self] _ in
             self?.check(userAsked: false)
         }
+        NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            guard let self, Date().timeIntervalSince(self.lastCheck) > 30 else { return }
+            self.check(userAsked: false)
+        }
     }
+
+    private var lastCheck = Date.distantPast
+    /// Lets GitHub answer "nothing new" cheaply, so frequent checks stay well within its limits.
+    private var etag: String?
 
     private func setStatus(_ s: String) {
         DispatchQueue.main.async {
@@ -34,14 +44,19 @@ final class Updater {
     /// Looks for a newer build. `done` gets a sentence to say when the user asked.
     func check(userAsked: Bool, done: ((String) -> Void)? = nil) {
         guard !isUpdating else { done?("I'm already updating."); return }
+        lastCheck = Date()
         var request = URLRequest(url: releaseAPI)
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         request.setValue("OLED-updater", forHTTPHeaderField: "User-Agent")
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.timeoutInterval = 20
+        if !userAsked, let etag { request.setValue(etag, forHTTPHeaderField: "If-None-Match") }
 
-        URLSession.shared.dataTask(with: request) { [weak self] data, _, _ in
+        URLSession.shared.dataTask(with: request) { [weak self] data, response, _ in
             guard let self else { return }
+            let http = response as? HTTPURLResponse
+            if http?.statusCode == 304 { return } // nothing new since last check
+            let tag = http?.value(forHTTPHeaderField: "ETag")
             guard let data,
                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let name = json["name"] as? String,
@@ -55,6 +70,8 @@ final class Updater {
             }
             let latest = Self.buildNumber(in: name)
             guard latest > Self.currentBuild else {
+                // Remember this answer only when there's nothing to install, so a failed download is retried.
+                DispatchQueue.main.async { self.etag = tag }
                 self.setStatus("Up to date (version \(Self.currentBuild))")
                 DispatchQueue.main.async { done?("I'm already up to date.") }
                 return

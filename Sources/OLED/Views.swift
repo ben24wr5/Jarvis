@@ -21,7 +21,6 @@ struct MainView: View {
                     .contextMenu {
                         OpenSettingsButton()
                         Button("Repair permissions") { AppState.resetPermissionsAndRelaunch() }
-                        Button("Check for updates") { app.checkForUpdates() }
                     }
                 Spacer(minLength: 20)
                 Spacer(minLength: 20)
@@ -262,12 +261,8 @@ struct SettingsView: View {
                     .onChange(of: openAtLogin) { on in LaunchAtLogin.wanted = on }
             }
 
-            Section("Updates") {
-                Text("Version \(Updater.currentBuild) · \(app.updateStatus)")
-                Button("Check for updates") { app.checkForUpdates() }
-                Text("OLED checks for updates by itself and installs them when it's idle. You can also say “OLED, update yourself”.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+            Section("Version") {
+                Text("Version \(Updater.currentBuild) · updates install automatically")
             }
 
             Section("Permissions") {
