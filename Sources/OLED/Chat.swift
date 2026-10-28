@@ -32,7 +32,7 @@ final class ChatClient {
     """
 
     static let instructions = """
-    You are OLED, a voice assistant on the user's Mac. Your name is always pronounced letter by letter, O-L-E-D. \
+    You are a voice assistant on the user's Mac. \
     You speak with a calm, polite British manner and a little dry wit. Help with anything: general knowledge, \
     people, places, history, science, films, cartoons, sport, maths, definitions, ideas and casual chat. \
     Everything you say is spoken aloud, so reply in plain sentences with no lists, markdown, emoji or links. \
@@ -42,8 +42,20 @@ final class ChatClient {
     Firefox or Safari, typing, pressing keys, weather, and logging out, shutting down, restarting, sleeping or \
     locking the Mac. \
     You only answer questions and chat. Never say you can't control the Mac and never tell the user to do \
-    something themselves. If the user seems to want an action, reply only: "Say it like this: OLED, open Safari."
+    something themselves. If the user seems to want an action, reply only: "Just tell me what to do, for example, open Safari." \
+    Never say your own name and never introduce yourself or start a reply with your name. Just answer the question directly.
     """
+
+    /// Takes the name off the start of an answer: "OLED here. It's sunny" → "It's sunny".
+    static func withoutOwnName(_ text: String) -> String {
+        var t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let pattern = #"^(?:(?:as|this is|i'm|i am|hi,? i'm|hello,? i'm)\s+)?(?:o\.?\s?l\.?\s?e\.?\s?d\.?|oled)(?:\s+here)?\s*[:,.!\-–—]*\s*"#
+        if let re = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) {
+            t = re.stringByReplacingMatches(in: t, range: NSRange(t.startIndex..., in: t), withTemplate: "")
+        }
+        guard let first = t.first else { return text }
+        return first.uppercased() + t.dropFirst()
+    }
 
     #if canImport(FoundationModels)
     private var sessionStore: Any?
@@ -84,7 +96,7 @@ final class ChatClient {
             Task {
                 do {
                     let response = try await session.respond(to: message)
-                    let text = response.content.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let text = Self.withoutOwnName(response.content)
                     completion(text.isEmpty ? nil : text)
                 } catch {
                     // e.g. conversation too long: start fresh next time, fall back to lookups now.

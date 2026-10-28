@@ -8,7 +8,21 @@ final class AppState: ObservableObject {
 
     @Published var stage: Stage = .asleep
     @Published var setupDone: Bool = UserDefaults.standard.bool(forKey: "setupDone") {
-        didSet { UserDefaults.standard.set(setupDone, forKey: "setupDone") }
+        didSet {
+            UserDefaults.standard.set(setupDone, forKey: "setupDone")
+            // A fresh setup gets the introduction again; normal use never does.
+            if !setupDone { UserDefaults.standard.set(false, forKey: Self.introKey) }
+        }
+    }
+
+    static let introKey = "capabilitiesIntroduced"
+
+    /// The one-time introduction, only after a fresh setup: who OLED is and everything it can do.
+    private func introduceIfNew() -> Bool {
+        guard !UserDefaults.standard.bool(forKey: Self.introKey) else { return false }
+        UserDefaults.standard.set(true, forKey: Self.introKey)
+        say("Hello. I'm OLED, your Mac assistant. " + ChatClient.capabilities, thenListen: false)
+        return true
     }
 
     let listener = SpeechListener()
@@ -104,13 +118,10 @@ final class AppState: ObservableObject {
         updater.startAutomaticChecks()
         ensurePermissions { [weak self] _ in
             // Speak first (proves the voice works), then start listening; any problem is explained out loud.
-            // The very first time, explain everything OLED can do.
-            let introKey = "capabilitiesIntroduced"
-            if !UserDefaults.standard.bool(forKey: introKey) {
-                UserDefaults.standard.set(true, forKey: introKey)
-                self?.say("Hello, I'm your assistant. " + ChatClient.capabilities, thenListen: false)
-            } else {
-                self?.say("Online. Say my name whenever you need me.", thenListen: false)
+            // Only after a fresh setup: introduce itself and explain everything it can do.
+            guard let self else { return }
+            if !self.introduceIfNew() {
+                self.say("Online.", thenListen: false)
             }
         }
     }
@@ -164,6 +175,7 @@ final class AppState: ObservableObject {
 
     func finishSetup() {
         setupDone = true
+        if started { _ = introduceIfNew() } // setup was run again from Settings
         startAssistant()
     }
 
