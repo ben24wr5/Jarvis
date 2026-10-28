@@ -356,7 +356,7 @@ final class CommandRouter {
             // Type the address (or the search words) into the browser for you.
             var address = typed ?? url.absoluteString
             for scheme in ["https://", "http://"] where address.hasPrefix(scheme) { address.removeFirst(scheme.count) }
-            keyboard.typeAddress(address, in: browser)
+            keyboard.typeAddress(address, url: url, in: browser)
         } else {
             _ = browser.open(url)
         }

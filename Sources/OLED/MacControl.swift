@@ -454,24 +454,69 @@ final class KeyboardController {
     }
 
     /// Opens the browser, starts a new tab, types the address and presses Return — like doing it on the keyboard.
-    func typeAddress(_ address: String, in browser: Browser) {
+    /// Opens the browser, makes sure it's really in front, then presses Command-T, types the address and
+    /// presses Return — exactly like doing it on the keyboard. If the browser can't be brought to the
+    /// front, the website is opened in it directly instead, so you always end up on the site.
+    func typeAddress(_ address: String, url: URL, in browser: Browser) {
         guard let appURL = browser.appURL else { return }
         let alreadyRunning = NSRunningApplication.runningApplications(withBundleIdentifier: browser.bundleID)
             .contains { !$0.isTerminated }
         let config = NSWorkspace.OpenConfiguration()
         config.activates = true
-        NSWorkspace.shared.openApplication(at: appURL, configuration: config, completionHandler: nil)
+        NSWorkspace.shared.openApplication(at: appURL, configuration: config) { app, _ in
+            DispatchQueue.main.async { Self.bringToFront(browser, app: app) }
+        }
 
-        let wait = alreadyRunning ? 0.7 : 2.2
-        DispatchQueue.main.asyncAfter(deadline: .now() + wait) {
-            Self.post(key: 17, flags: .maskCommand) // Command-T: new tab, cursor in the address bar
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                DispatchQueue.global(qos: .userInitiated).async {
-                    Self.typeNow(address)
-                    usleep(150_000)
-                    DispatchQueue.main.async { Self.post(key: 36, flags: []) } // Return
+        Self.waitUntilFront(browser, until: Date().addingTimeInterval(6)) { inFront in
+            guard inFront else {
+                // Couldn't get the browser in front: open the website in it directly.
+                _ = browser.open(url)
+                return
+            }
+            // A freshly opened browser needs a moment for its window to be ready.
+            let settle = alreadyRunning ? 0.35 : 1.2
+            DispatchQueue.main.asyncAfter(deadline: .now() + settle) {
+                guard Self.isFront(browser) else { _ = browser.open(url); return }
+                Self.post(key: 17, flags: .maskCommand) // Command-T: new tab, cursor in the address bar
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                    guard Self.isFront(browser) else { _ = browser.open(url); return }
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        Self.typeNow(address)
+                        usleep(200_000)
+                        DispatchQueue.main.async { Self.post(key: 36, flags: []) } // Return
+                    }
                 }
             }
+        }
+    }
+
+    private static func isFront(_ browser: Browser) -> Bool {
+        NSWorkspace.shared.frontmostApplication?.bundleIdentifier == browser.bundleID
+    }
+
+    /// Uses every method macOS allows to bring the browser to the front.
+    private static func bringToFront(_ browser: Browser, app: NSRunningApplication?) {
+        let running = app ?? NSRunningApplication.runningApplications(withBundleIdentifier: browser.bundleID).first
+        if let running {
+            if #available(macOS 14.0, *) {
+                NSApp.yieldActivation(to: running)
+                running.activate()
+            } else {
+                running.activate(options: [.activateIgnoringOtherApps])
+            }
+        }
+        // Apple's scripting "activate" is always allowed to bring an app forward.
+        var error: NSDictionary?
+        NSAppleScript(source: "tell application id \"\(browser.bundleID)\" to activate")?.executeAndReturnError(&error)
+    }
+
+    private static func waitUntilFront(_ browser: Browser, until deadline: Date, then done: @escaping (Bool) -> Void) {
+        if isFront(browser) { done(true); return }
+        if Date() > deadline { done(false); return }
+        // Keep nudging it forward while waiting (it may still be launching).
+        if Int(Date().timeIntervalSince1970 * 10) % 10 == 0 { bringToFront(browser, app: nil) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+            waitUntilFront(browser, until: deadline, then: done)
         }
     }
 
