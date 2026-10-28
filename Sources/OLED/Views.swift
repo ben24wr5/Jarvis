@@ -17,7 +17,12 @@ struct MainView: View {
                     .frame(width: orbSize, height: orbSize)
                     .contentShape(Circle())
                     .onTapGesture { app.orbTapped() }
-                    .help("Say “OLED” or click the orb")
+                    .help("Say “OLED” or click the orb. Right-click for Settings.")
+                    .contextMenu {
+                        OpenSettingsButton()
+                        Button("Repair permissions") { AppState.resetPermissionsAndRelaunch() }
+                        Button("Check for updates") { app.checkForUpdates() }
+                    }
                 Spacer(minLength: 20)
                 Spacer(minLength: 20)
             }
@@ -25,6 +30,19 @@ struct MainView: View {
         }
         .background(Theme.background)
         .onAppear { app.startAssistant() }
+    }
+}
+
+/// Opens OLED's Settings window (works on macOS 13 and later).
+struct OpenSettingsButton: View {
+    var body: some View {
+        if #available(macOS 14, *) {
+            SettingsLink { Text("Settings…") }
+        } else {
+            Button("Settings…") {
+                NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+            }
+        }
     }
 }
 
