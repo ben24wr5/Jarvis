@@ -104,7 +104,14 @@ final class AppState: ObservableObject {
         updater.startAutomaticChecks()
         ensurePermissions { [weak self] _ in
             // Speak first (proves the voice works), then start listening; any problem is explained out loud.
-            self?.say("OLED online. Say my name whenever you need me.", thenListen: false)
+            // The very first time, explain everything OLED can do.
+            let introKey = "capabilitiesIntroduced"
+            if !UserDefaults.standard.bool(forKey: introKey) {
+                UserDefaults.standard.set(true, forKey: introKey)
+                self?.say("Hello, I'm your assistant. " + ChatClient.capabilities, thenListen: false)
+            } else {
+                self?.say("Online. Say my name whenever you need me.", thenListen: false)
+            }
         }
     }
 
@@ -211,6 +218,7 @@ final class AppState: ObservableObject {
 
     func orbTapped() {
         speaker.stop()
+        listener.echoText = nil
         expectingSpeech = true
         failureAnnounced = false
         lastBlocked = nil // a click always gets an answer, even if a problem was already explained
@@ -223,6 +231,9 @@ final class AppState: ObservableObject {
     }
 
     private func heardName() {
+        // Talking over OLED: stop speaking straight away and listen to the new command.
+        if stage == .speaking || speaker.isSpeaking { speaker.stop() }
+        listener.echoText = nil
         expectingSpeech = true
         NSSound(named: "Tink")?.play()
         stage = .wake
@@ -267,6 +278,7 @@ final class AppState: ObservableObject {
         stage = .speaking
         speaker.speak(text) { [weak self] in
             guard let self else { return }
+            self.listener.echoText = nil
             if thenListen {
                 self.stage = .listening
                 self.listener.start(mode: .direct, timeout: 6)
@@ -274,6 +286,9 @@ final class AppState: ObservableObject {
                 self.goToSleep()
             }
         }
+        // Keep listening for "OLED" while speaking, so you can interrupt with a new command.
+        listener.echoText = text
+        listener.start(mode: .wake)
     }
 
     private func goToSleep() {

@@ -23,12 +23,13 @@ enum AccessibilityPermission {
 // MARK: - Power: shut down, restart, sleep, lock
 
 enum PowerAction {
-    case shutDown, restart, sleep, lock
+    case shutDown, restart, logOut, sleep, lock
 
     var confirmQuestion: String? {
         switch self {
         case .shutDown: return "Are you sure you want me to shut down your Mac?"
         case .restart: return "Are you sure you want me to restart your Mac?"
+        case .logOut: return "Are you sure you want me to log you out?"
         default: return nil
         }
     }
@@ -37,6 +38,7 @@ enum PowerAction {
         switch self {
         case .shutDown: return "Shutting down. Goodbye."
         case .restart: return "Restarting. See you in a moment."
+        case .logOut: return "Logging you out. Goodbye."
         case .sleep: return "Putting your Mac to sleep."
         case .lock: return "Locking the screen."
         }
@@ -52,6 +54,10 @@ enum PowerAction {
             return .shutDown
         }
         if t.contains(" restart") || t.contains(" reboot") { return .restart }
+        if t.contains(" log out") || t.contains(" logout") || t.contains(" log me out") || t.contains(" log off")
+            || t.contains(" sign out") || t.contains(" sign me out") {
+            return .logOut
+        }
         if t.contains(" lock") && (t.contains(" screen") || mentionsMachine || text.trimmingCharacters(in: .whitespaces) == "lock") {
             return .lock
         }
@@ -66,6 +72,9 @@ enum PowerAction {
         switch self {
         case .shutDown: Self.runAppleScript("tell application \"System Events\" to shut down")
         case .restart: Self.runAppleScript("tell application \"System Events\" to restart")
+        case .logOut:
+            // Log out straight away (already confirmed by voice), without macOS's extra dialog.
+            Self.run("/usr/bin/osascript", ["-e", "tell application \"loginwindow\" to «event aevtrlgo»"])
         case .sleep: Self.run("/usr/bin/pmset", ["sleepnow"])
         case .lock:
             // Control-Command-Q: the standard macOS "Lock Screen" shortcut.
@@ -116,43 +125,147 @@ enum AppFinder {
         s.lowercased().filter { $0.isLetter || $0.isNumber }
     }
 
-    static func allApps() -> [(name: String, url: URL)] {
+    /// What people say vs. what the app is called (or how speech recognition writes it).
+    private static let aliases: [String: String] = [
+        "whatsup": "whatsapp", "whatsapp": "whatsapp", "whatsupp": "whatsapp", "whatsap": "whatsapp",
+        "settings": "systemsettings", "systempreferences": "systemsettings", "preferences": "systemsettings",
+        "vscode": "visualstudiocode", "vs": "visualstudiocode", "code": "visualstudiocode",
+        "word": "microsoftword", "excel": "microsoftexcel", "powerpoint": "microsoftpowerpoint",
+        "outlook": "microsoftoutlook", "teams": "microsoftteams", "onenote": "microsoftonenote",
+        "chrome": "googlechrome", "google": "googlechrome", "edge": "microsoftedge",
+        "files": "finder", "finder": "finder", "terminal": "terminal", "the terminal": "terminal",
+        "appstore": "appstore", "store": "appstore", "itunes": "music", "applemusic": "music",
+        "appletv": "tv", "imessage": "messages", "message": "messages", "text": "messages",
+        "photo": "photos", "picture": "photos", "pictures": "photos", "camera": "photobooth",
+        "calculator": "calculator", "calc": "calculator", "clock": "clock", "alarm": "clock",
+        "activitymonitor": "activitymonitor", "taskmanager": "activitymonitor",
+        "facetime": "facetime", "zoom": "zoomus", "capcut": "capcut", "steam": "steam",
+        "notes": "notes", "note": "notes", "reminder": "reminders", "calendar": "calendar",
+        "mail": "mail", "email": "mail", "maps": "maps", "map": "maps", "weatherapp": "weather"
+    ]
+
+    private static var cache: [(name: String, key: String, url: URL)] = []
+    private static var cacheTime = Date.distantPast
+
+    /// Every app on the Mac: the usual folders plus everything Spotlight knows about.
+    static func allApps() -> [(name: String, key: String, url: URL)] {
+        if Date().timeIntervalSince(cacheTime) < 60, !cache.isEmpty { return cache }
         let fm = FileManager.default
-        var result: [(String, URL)] = []
+        var urls = Set<URL>()
         for folder in searchFolders {
             guard let items = try? fm.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil) else { continue }
-            for item in items where item.pathExtension == "app" {
-                result.append((item.deletingPathExtension().lastPathComponent, item))
-            }
-            // One level of sub-folders (e.g. "/Applications/Microsoft Office/…")
+            for item in items where item.pathExtension == "app" { urls.insert(item.resolvingSymlinksInPath()) }
             for sub in items where sub.pathExtension.isEmpty {
                 if let inner = try? fm.contentsOfDirectory(at: sub, includingPropertiesForKeys: nil) {
-                    for item in inner where item.pathExtension == "app" {
-                        result.append((item.deletingPathExtension().lastPathComponent, item))
-                    }
+                    for item in inner where item.pathExtension == "app" { urls.insert(item.resolvingSymlinksInPath()) }
                 }
             }
         }
+        for path in spotlightApps() { urls.insert(URL(fileURLWithPath: path)) }
+
+        var result: [(String, String, URL)] = []
+        for url in urls {
+            // Skip helper apps buried inside other apps.
+            if url.path.components(separatedBy: ".app/").count > 1 { continue }
+            var names = [url.deletingPathExtension().lastPathComponent]
+            if let bundle = Bundle(url: url) {
+                for key in ["CFBundleDisplayName", "CFBundleName"] {
+                    if let n = bundle.localizedInfoDictionary?[key] as? String ?? bundle.infoDictionary?[key] as? String {
+                        names.append(n)
+                    }
+                }
+            }
+            names.append(FileManager.default.displayName(atPath: url.path).replacingOccurrences(of: ".app", with: ""))
+            for n in Set(names) where !simplify(n).isEmpty {
+                result.append((n, simplify(n), url))
+            }
+        }
+        cache = result
+        cacheTime = Date()
         return result
     }
 
+    /// Asks Spotlight for every application on the Mac.
+    private static func spotlightApps() -> [String] {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/mdfind")
+        p.arguments = ["kMDItemContentType == 'com.apple.application-bundle'"]
+        let pipe = Pipe()
+        p.standardOutput = pipe
+        p.standardError = FileHandle.nullDevice
+        do { try p.run() } catch { return [] }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        p.waitUntilExit()
+        return String(decoding: data, as: UTF8.self).split(separator: "\n").map(String.init)
+            .filter { $0.hasSuffix(".app") && !$0.contains("/Library/Developer/") }
+    }
+
     /// Finds the installed app that best matches a spoken name.
-    static func find(_ spoken: String) -> (name: String, url: URL)? {
-        let target = simplify(spoken)
+    /// `allowLoose: false` only accepts an exact name or nickname — used when the words are also a
+    /// well-known website ("gmail" shouldn't open Mail, "bbc news" shouldn't open Apple News).
+    static func find(_ spoken: String, allowLoose: Bool = true) -> (name: String, url: URL)? {
+        var target = simplify(spoken)
         guard !target.isEmpty else { return nil }
         let apps = allApps()
-        if let exact = apps.first(where: { simplify($0.name) == target }) { return exact }
-        if let prefix = apps.filter({ simplify($0.name).hasPrefix(target) })
-            .min(by: { $0.name.count < $1.name.count }) { return prefix }
-        if target.count >= 4,
-           let contains = apps.filter({ simplify($0.name).contains(target) })
-            .min(by: { $0.name.count < $1.name.count }) { return contains }
-        // e.g. "visual studio code" said as "vs code"
-        if let reverse = apps.first(where: { app in
-            let n = simplify(app.name)
-            return n.count >= 4 && target.contains(n)
-        }) { return reverse }
+        func pick(_ list: [(name: String, key: String, url: URL)]) -> (name: String, url: URL)? {
+            guard let best = list.min(by: { $0.key.count < $1.key.count }) else { return nil }
+            return (best.name, best.url)
+        }
+
+        // 1. Exact name (then a known nickname: "settings" → System Settings, "what's up" → WhatsApp)
+        if let exact = pick(apps.filter { $0.key == target }) { return exact }
+        if let alias = aliases[target] {
+            target = alias
+            if let exact = pick(apps.filter { $0.key == target }) { return exact }
+        }
+        guard allowLoose else { return nil }
+        // 2. Starts with what was said: "spot" → Spotify, "microsoft" → Microsoft Word…
+        if target.count >= 3, let prefix = pick(apps.filter { $0.key.hasPrefix(target) }) { return prefix }
+        // 3. Contains it: "word" → Microsoft Word
+        if target.count >= 4, let contains = pick(apps.filter { $0.key.contains(target) }) { return contains }
+        // 4. What was said contains the app's name: "the spotify music app" → Spotify
+        //    (the app's name must be most of what was said, so "bbc news" doesn't open Apple News)
+        if let reverse = apps.filter({ $0.key.count >= 4 && target.contains($0.key)
+                                       && Double($0.key.count) >= Double(target.count) * 0.6 })
+            .max(by: { $0.key.count < $1.key.count }) { return (reverse.name, reverse.url) }
+        // 5. Every spoken word appears in the name: "studio code" → Visual Studio Code
+        let words = spoken.lowercased().split(separator: " ").map { simplify(String($0)) }.filter { $0.count >= 2 }
+        if words.count >= 2, let all = pick(apps.filter { app in words.allSatisfy { app.key.contains($0) } }) { return all }
+        // 6. Close spelling (speech recognition is rarely letter-perfect): "spotfy", "discored"
+        let allowed = target.count <= 4 ? 1 : (target.count <= 8 ? 2 : 3)
+        let close = apps.map { ($0, distance(target, $0.key)) }.filter { $0.1 <= allowed }
+        if let best = close.min(by: { $0.1 < $1.1 || ($0.1 == $1.1 && $0.0.key.count < $1.0.key.count) }) {
+            return (best.0.name, best.0.url)
+        }
+        // 7. Last try: ask macOS itself to resolve the name.
+        if let url = launchServicesApp(named: spoken) {
+            return (url.deletingPathExtension().lastPathComponent, url)
+        }
         return nil
+    }
+
+    /// Lets macOS look an app up by name, the same way `open -a Name` does.
+    private static func launchServicesApp(named name: String) -> URL? {
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty,
+              let path = NSWorkspace.shared.fullPath(forApplication: trimmed) else { return nil }
+        return URL(fileURLWithPath: path)
+    }
+
+    private static func distance(_ a: String, _ b: String) -> Int {
+        let a = Array(a), b = Array(b)
+        if a.isEmpty { return b.count }
+        if b.isEmpty { return a.count }
+        if abs(a.count - b.count) > 3 { return 99 }
+        var prev = Array(0...b.count)
+        for i in 1...a.count {
+            var cur = [i] + Array(repeating: 0, count: b.count)
+            for j in 1...b.count {
+                cur[j] = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] == b[j - 1] ? 0 : 1))
+            }
+            prev = cur
+        }
+        return prev[b.count]
     }
 
     static func open(_ url: URL) {
@@ -242,6 +355,12 @@ enum Website {
         parts.queryItems = [URLQueryItem(name: "q", value: "!ducky \(s)")]
         _ = force
         return parts.url
+    }
+
+    /// True for well-known websites ("youtube", "gmail", "bbc news"…).
+    static func isKnownSite(_ spoken: String) -> Bool {
+        let s = spoken.lowercased().trimmingCharacters(in: .whitespaces)
+        return known[s] != nil || known[s.replacingOccurrences(of: " ", with: "")] != nil
     }
 
     static func displayName(for spoken: String) -> String {

@@ -327,7 +327,8 @@ final class CommandRouter {
         guard !target.isEmpty else { return Reply(text: "What would you like me to open?", expectsAnswer: false) }
 
         let looksLikeAddress = target.contains(".") || target.contains(" dot ")
-        if !forceWeb, !looksLikeAddress, let app = AppFinder.find(target) {
+        // Any app on the Mac opens directly. Only if there's no such app is it treated as a website.
+        if !forceWeb, !looksLikeAddress, let app = AppFinder.find(target, allowLoose: !Website.isKnownSite(target)) {
             AppFinder.open(app.url)
             return Reply(text: "Opening \(app.name).", expectsAnswer: false)
         }

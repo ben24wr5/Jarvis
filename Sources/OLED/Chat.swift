@@ -22,6 +22,15 @@ enum LegacyKeyCleanup {
 /// 2. Apple's on-device AI (Apple Intelligence) when the Mac has it — free, private, offline.
 /// 3. Otherwise free lookups: Wikipedia for people, places and things; a free dictionary for meanings.
 final class ChatClient {
+    /// What OLED says when it introduces itself or is asked what it can do.
+    static let capabilities = """
+    Here's what I can do. I can open any app on your MacBook. Just say open, and the app's name. \
+    I use Safari and Firefox only for websites. Say go to, and any website, and I'll ask which browser, \
+    then type it in for you. I can also search the web, type and press keys, tell you the time, date and weather, \
+    answer questions and tell jokes. And I can log you out, put your Mac to sleep, lock it, restart it, or shut it down. \
+    You can talk to me even while I'm speaking. Just say my name.
+    """
+
     static let instructions = """
     You are OLED, a voice assistant on the user's Mac. Your name is always pronounced letter by letter, O-L-E-D. \
     You speak with a calm, polite British manner and a little dry wit. Help with anything: general knowledge, \
@@ -30,7 +39,8 @@ final class ChatClient {
     Keep replies short, one to three sentences, unless asked for more. If something is very recent and you \
     can't know it, say so briefly. \
     OLED's own system already carries out actions on the Mac: opening apps, opening and searching websites in \
-    Firefox or Safari, typing, pressing keys, weather, and shutting down, restarting, sleeping or locking the Mac. \
+    Firefox or Safari, typing, pressing keys, weather, and logging out, shutting down, restarting, sleeping or \
+    locking the Mac. \
     You only answer questions and chat. Never say you can't control the Mac and never tell the user to do \
     something themselves. If the user seems to want an action, reply only: "Say it like this: OLED, open Safari."
     """
@@ -47,7 +57,7 @@ final class ChatClient {
 
     func reply(to message: String, completion: @escaping (String) -> Void) {
         let done: (String) -> Void = { text in DispatchQueue.main.async { completion(text) } }
-        let lower = message.lowercased().trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
+        let lower = CommandRouter.normalise(message).trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
 
         if let quick = Self.smallTalk(lower) { done(quick); return }
         if let sum = Self.maths(lower) { done(sum); return }
@@ -96,8 +106,9 @@ final class ChatClient {
              ["All systems running smoothly, thank you. How can I help?", "Very well, thanks for asking. What can I do for you?"]),
             (["who are you", "what are you", "what's your name", "what is your name", "introduce yourself"],
              ["I'm OLED, your Mac assistant. I can open apps and websites, use the keyboard, check the weather and answer questions."]),
-            (["what can you do", "help", "what do you do", "what can i say"],
-             ["I can open apps and websites, type and press keys, tell you the time and weather, tell jokes, answer questions, and shut down, restart, sleep or lock your Mac."]),
+            (["what can you do", "help", "what do you do", "what can i say", "tell me what you can do",
+              "what are your features", "what are you able to do", "what can you do for me", "features"],
+             [ChatClient.capabilities]),
             (["who made you", "who created you", "who built you"],
              ["I was built for you, to run right here on your Mac."]),
             (["i love you", "love you"],

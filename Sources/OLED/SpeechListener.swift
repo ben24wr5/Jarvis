@@ -377,12 +377,29 @@ final class SpeechListener {
         WakeWord.textAfter(in: text)
     }
 
+    /// While OLED is talking, this holds what it's saying, so it can tell its own voice from yours.
+    /// You can still talk over it: say "OLED" and a command and it stops and does it.
+    var echoText: String?
+
+    /// True if the words after the name are just OLED hearing itself through the speakers.
+    private func isEcho(_ after: String) -> Bool {
+        guard let echo = echoText else { return false }
+        let said = WakeWord.tokens(of: after).filter { !$0.isEmpty }
+        guard !said.isEmpty else { return true } // only the name so far: wait for the command
+        let echoTokens = WakeWord.tokens(of: echo)
+        if (" " + echoTokens.joined(separator: " ") + " ").contains(" " + said.joined(separator: " ") + " ") { return true }
+        let echoSet = Set(echoTokens)
+        let overlap = Double(said.filter { echoSet.contains($0) }.count) / Double(said.count)
+        return said.count >= 3 && overlap >= 0.8
+    }
+
     private func handle(text: String) {
         var command: String
         if mode == .direct {
             command = text
         } else {
             guard let after = Self.textAfterWakeWord(in: text) else { return }
+            if !woke, isEcho(after) { return }
             if !woke {
                 woke = true
                 refreshTimer?.invalidate()
