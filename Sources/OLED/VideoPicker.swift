@@ -1,8 +1,40 @@
 import AppKit
 import ApplicationServices
 
-/// Clicks videos on YouTube and other video websites, and presses Play/Pause — through Accessibility,
-/// like clicking with the mouse.
+/// The visible mouse pointer: glides smoothly to a spot and clicks there, so you can see what OLED clicks.
+enum Pointer {
+    private static let source = CGEventSource(stateID: .hidSystemState)
+
+    static var current: CGPoint {
+        CGEvent(source: nil)?.location ?? .zero
+    }
+
+    /// Moves the pointer to `target` over about half a second.
+    static func glide(to target: CGPoint) {
+        let start = current
+        let steps = 30
+        for i in 1...steps {
+            let t = Double(i) / Double(steps)
+            let ease = t < 0.5 ? 2 * t * t : 1 - pow(-2 * t + 2, 2) / 2 // smooth start and stop
+            let p = CGPoint(x: start.x + (target.x - start.x) * ease, y: start.y + (target.y - start.y) * ease)
+            CGEvent(mouseEventSource: source, mouseType: .mouseMoved, mouseCursorPosition: p, mouseButton: .left)?
+                .post(tap: .cghidEventTap)
+            usleep(16_000)
+        }
+    }
+
+    static func click(at point: CGPoint) {
+        usleep(120_000)
+        CGEvent(mouseEventSource: source, mouseType: .leftMouseDown, mouseCursorPosition: point, mouseButton: .left)?
+            .post(tap: .cghidEventTap)
+        usleep(60_000)
+        CGEvent(mouseEventSource: source, mouseType: .leftMouseUp, mouseCursorPosition: point, mouseButton: .left)?
+            .post(tap: .cghidEventTap)
+    }
+}
+
+/// Clicks videos on YouTube and other video websites, and presses Play/Pause — by moving the mouse
+/// pointer to them and clicking, like a person would.
 enum VideoPicker {
     struct Candidate {
         let element: AXUIElement
@@ -76,10 +108,31 @@ enum VideoPicker {
         return best
     }
 
+    /// Clicks like a person: scrolls the video into view, glides the mouse pointer onto it, then clicks.
     static func click(_ el: AXUIElement) {
-        if AXUIElementPerformAction(el, kAXPressAction as CFString) != .success {
-            PageSearch.click(el)
+        AXUIElementPerformAction(el, "AXScrollToVisible" as CFString)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+            guard let target = centre(of: el) else {
+                AXUIElementPerformAction(el, kAXPressAction as CFString)
+                return
+            }
+            DispatchQueue.global(qos: .userInitiated).async {
+                Pointer.glide(to: target)
+                Pointer.click(at: target)
+            }
         }
+    }
+
+    private static func centre(of el: AXUIElement) -> CGPoint? {
+        var posRef: CFTypeRef?, sizeRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(el, kAXPositionAttribute as CFString, &posRef) == .success,
+              AXUIElementCopyAttributeValue(el, kAXSizeAttribute as CFString, &sizeRef) == .success,
+              let posRef, let sizeRef else { return nil }
+        var pos = CGPoint.zero, size = CGSize.zero
+        AXValueGetValue(posRef as! AXValue, .cgPoint, &pos)
+        AXValueGetValue(sizeRef as! AXValue, .cgSize, &size)
+        guard size.width > 2, size.height > 2 else { return nil }
+        return CGPoint(x: pos.x + size.width / 2, y: pos.y + size.height / 2)
     }
 
     /// After a search: wait for results, click the best-matching video, then make sure it plays.
