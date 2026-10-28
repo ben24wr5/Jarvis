@@ -179,7 +179,7 @@ struct SetupView: View {
 
 struct SettingsView: View {
     @EnvironmentObject var app: AppState
-    @State private var robot = UserDefaults.standard.object(forKey: Speaker.robotKey) as? Double ?? 0.5
+    @State private var robot = UserDefaults.standard.object(forKey: Speaker.robotKey) as? Double ?? 0.65
     @State private var voiceID = Speaker.selectedVoice?.identifier ?? ""
     @State private var homeTown = Weather.homeTown ?? ""
     @State private var openAtLogin = LaunchAtLogin.wanted
