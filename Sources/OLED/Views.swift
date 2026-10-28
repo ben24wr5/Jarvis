@@ -51,31 +51,26 @@ struct OpenSettingsButton: View {
     }
 }
 
-/// The glowing gear in the top-right corner that opens Settings.
+/// A standard macOS "Settings" button in the top-right corner.
 struct SettingsGearButton: View {
-    @State private var hovering = false
-
-    private var gear: some View {
-        Image(systemName: "gearshape")
-            .font(.system(size: 20, weight: .light))
-            .foregroundColor(hovering ? Theme.title : Theme.accent.opacity(0.8))
-            .shadow(color: Theme.accent.opacity(hovering ? 0.9 : 0.5), radius: hovering ? 8 : 4)
-            .frame(width: 44, height: 44)
-            .contentShape(Rectangle())
+    private var label: some View {
+        Label("Settings", systemImage: "gearshape")
+            .font(.system(size: 14, weight: .medium))
+            .padding(.horizontal, 4)
+            .frame(minHeight: 26)
     }
 
     var body: some View {
         Group {
             if #available(macOS 14, *) {
-                SettingsLink { gear }
+                SettingsLink { label }
             } else {
-                Button { NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil) } label: { gear }
+                Button { NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil) } label: { label }
             }
         }
-        .buttonStyle(.plain)
-        .onHover { hovering = $0 }
-        .help("Settings")
-        .accessibilityLabel("Settings")
+        .buttonStyle(.bordered)
+        .controlSize(.large)
+        .help("Open OLED's Settings")
     }
 }
 
