@@ -23,7 +23,10 @@ struct MainView: View {
                         Button("Repair permissions") { AppState.resetPermissionsAndRelaunch() }
                     }
                 Spacer(minLength: 20)
-                Spacer(minLength: 20)
+                CommandField()
+                    .frame(maxWidth: 640)
+                    .padding(.horizontal, 24)
+                    .padding(.bottom, 32)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
@@ -34,6 +37,51 @@ struct MainView: View {
         }
         .background(Theme.background)
         .onAppear { app.startAssistant() }
+    }
+}
+
+/// The text box at the bottom: type anything you'd say, press Return, and OLED says its answer and does it.
+struct CommandField: View {
+    @EnvironmentObject var app: AppState
+    @State private var text = ""
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "keyboard")
+                .font(.system(size: 15))
+                .foregroundColor(Theme.muted)
+                .accessibilityHidden(true)
+            TextField("", text: $text, prompt: Text("Type anything you'd say to OLED, then press Return")
+                .foregroundColor(Color(hex: 0x5F86A0)))
+                .textFieldStyle(.plain)
+                .font(.system(size: 16))
+                .foregroundColor(Color(hex: 0xDFF5FF))
+                .focused($focused)
+                .onSubmit(send)
+                .accessibilityLabel("Type a command or question")
+            Button(action: send) {
+                Image(systemName: "arrow.up.circle.fill")
+                    .font(.system(size: 22))
+                    .foregroundColor(text.trimmingCharacters(in: .whitespaces).isEmpty ? Theme.muted.opacity(0.5) : Theme.accent)
+            }
+            .buttonStyle(.plain)
+            .disabled(text.trimmingCharacters(in: .whitespaces).isEmpty)
+            .accessibilityLabel("Send")
+        }
+        .padding(.horizontal, 16)
+        .frame(height: 46)
+        .background(RoundedRectangle(cornerRadius: 23).fill(Color(hex: 0x081E3C, opacity: 0.55)))
+        .overlay(RoundedRectangle(cornerRadius: 23)
+            .stroke(focused ? Theme.accent.opacity(0.9) : Color(hex: 0x12385C), lineWidth: 1))
+        .shadow(color: focused ? Theme.accent.opacity(0.35) : .clear, radius: 10)
+    }
+
+    private func send() {
+        let command = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !command.isEmpty else { return }
+        text = ""
+        app.typed(command)
     }
 }
 

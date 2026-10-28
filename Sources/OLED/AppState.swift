@@ -228,6 +228,16 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// Something typed in the text box: handled exactly like something said — OLED speaks its answer and does it.
+    func typed(_ command: String) {
+        speaker.stop()
+        listener.stop()
+        listener.echoText = nil
+        expectingSpeech = false
+        lastBlocked = nil
+        run(command)
+    }
+
     func orbTapped() {
         speaker.stop()
         listener.echoText = nil
