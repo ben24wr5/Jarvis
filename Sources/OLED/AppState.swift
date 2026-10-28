@@ -151,6 +151,7 @@ final class AppState: ObservableObject {
     /// Restarts listening (e.g. after permissions were switched on in System Settings).
     func restartListening() {
         speaker.stop()
+        listener.resetAudio()
         goToSleep()
     }
 

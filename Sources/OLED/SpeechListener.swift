@@ -5,6 +5,10 @@ import ObjCSupport
 
 /// Listens to the microphone and turns speech into commands.
 /// In `.wake` mode it waits for the name "OLED"; in `.direct` mode everything heard is the command.
+///
+/// The microphone itself stays open the whole time OLED is running; only the speech-recognition
+/// *sessions* start and stop. Switching the mic off and on would flip AirPods between music mode and
+/// phone-call mode every time OLED speaks, which interrupts listening. Keeping it open avoids that.
 final class SpeechListener {
     enum Mode { case wake, direct }
 
@@ -14,28 +18,142 @@ final class SpeechListener {
     var onTimeout: ((_ heardSound: Bool) -> Void)?
     /// Listening keeps failing; the text is the reason Apple gave.
     var onFailure: ((String) -> Void)?
+    /// Plain-English status for Settings → Status.
+    var onStatus: ((String) -> Void)?
+
+    /// Why listening can't work, in a form OLED can say out loud.
+    enum Blocker { case microphone, speechRecognition, dictation, noMicrophone, silentMicrophone }
+    var onBlocked: ((Blocker) -> Void)?
+
+    /// The last thing the recogniser heard, and the current mic level (0–1), for Settings → Status.
+    private(set) var lastHeard = ""
+    private(set) var micLevel: Float = 0
+
+    static var isAuthorized: Bool {
+        SFSpeechRecognizer.authorizationStatus() == .authorized &&
+        AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
+    }
+
+    // MARK: - Recognition state
+
+    private let recognizers: [SFSpeechRecognizer] = [
+        SFSpeechRecognizer(locale: Locale(identifier: "en-GB")),
+        SFSpeechRecognizer(),
+        SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
+    ].compactMap { $0 }
+    private var useOnDevice = true
+
+    /// British English if it's ready, otherwise the Mac's own language, otherwise US English.
+    private func currentRecognizer() -> SFSpeechRecognizer? {
+        recognizers.first(where: { $0.isAvailable })
+    }
+
+    private var task: SFSpeechRecognitionTask?
+    private let requestLock = NSLock()
+    private var _request: SFSpeechAudioBufferRecognitionRequest?
+    private var request: SFSpeechAudioBufferRecognitionRequest? {
+        get { requestLock.lock(); defer { requestLock.unlock() }; return _request }
+        set { requestLock.lock(); _request = newValue; requestLock.unlock() }
+    }
+
+    private var mode: Mode = .wake
+    private var woke = false
+    private var commandText = ""
+    private var generation = 0
+    private var silenceTimer: Timer?
+    private var giveUpTimer: Timer?
+    private var refreshTimer: Timer?
+    /// True while a listening session is meant to be running (it pauses while OLED speaks).
+    private var isActive = false
 
     private var sessionStarted = Date()
     private var gotText = false
     private var fastFailures = 0
     private var sessionPeak: Float = 0
     private var heardSound: Bool { sessionPeak > 0.02 }
-    /// Plain-English status for Settings → Status.
-    var onStatus: ((String) -> Void)?
 
-    /// The last thing the recogniser heard, and the current mic level (0–1), for Settings → Status.
-    private(set) var lastHeard = ""
-    private(set) var micLevel: Float = 0
+    /// How long to wait for a command after waking, or after a question.
+    var directTimeout: TimeInterval = 7
 
-    // MARK: Following the microphone (AirPods in or out)
+    private func report(_ status: String) {
+        if Thread.isMainThread { onStatus?(status) } else {
+            DispatchQueue.main.async { [weak self] in self?.onStatus?(status) }
+        }
+    }
 
-    private var deviceWatchInstalled = false
+    // MARK: - The microphone (stays open)
+
+    private var engine: AVAudioEngine?
     private var configObserver: NSObjectProtocol?
-    private var restartPending = false
+    private var deviceWatchInstalled = false
+    private var rebuildPending = false
+    private var recentRebuilds: [Date] = []
+    private var noMicRetries = 0
+    private var currentFormat: AVAudioFormat?
 
-    /// When the Mac switches microphone (AirPods in or out, a headset plugged in), restart listening
-    /// on the new microphone, keeping whatever OLED was doing.
-    private func watchMicrophoneChanges() {
+    /// Makes sure the microphone is running. Returns false if it can't be started right now.
+    private func ensureAudio() -> Bool {
+        watchDefaultMicrophone()
+        if let engine, engine.isRunning { return true }
+        if engine != nil { shutDownAudio() }
+
+        let engine = AVAudioEngine()
+        let input = engine.inputNode
+        // Optional: listen with the Mac's own microphone while AirPods are connected (off by default).
+        if let device = AudioDevices.microphoneToUse, let unit = input.audioUnit {
+            AudioDevices.use(device, on: unit)
+        }
+        let format = input.outputFormat(forBus: 0)
+        guard format.channelCount > 0, format.sampleRate > 0 else { return false }
+
+        do {
+            try OLEDSafe.run {
+                input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
+                    self?.feed(buffer)
+                }
+            }
+            try OLEDSafe.run { engine.prepare() }
+            var startError: Error?
+            try OLEDSafe.run { do { try engine.start() } catch { startError = error } }
+            if let startError { throw startError }
+        } catch {
+            report("Microphone couldn't start: \(error.localizedDescription)")
+            try? OLEDSafe.run {
+                if engine.isRunning { engine.stop() }
+                input.removeTap(onBus: 0)
+            }
+            return false
+        }
+
+        self.engine = engine
+        currentFormat = format
+        configObserver.map(NotificationCenter.default.removeObserver)
+        configObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main
+        ) { [weak self] _ in self?.audioConfigurationChanged() }
+        return true
+    }
+
+    private func shutDownAudio() {
+        guard let engine else { return }
+        self.engine = nil
+        currentFormat = nil
+        configObserver.map(NotificationCenter.default.removeObserver)
+        configObserver = nil
+        try? OLEDSafe.run {
+            if engine.isRunning { engine.stop() }
+            engine.inputNode.removeTap(onBus: 0)
+        }
+        micLevel = 0
+    }
+
+    private func feed(_ buffer: AVAudioPCMBuffer) {
+        request?.append(buffer)
+        measureLevel(buffer)
+    }
+
+    /// Fires when the Mac switches microphone (AirPods in or out, a headset plugged in).
+    private func watchDefaultMicrophone() {
         guard !deviceWatchInstalled else { return }
         deviceWatchInstalled = true
         var address = AudioObjectPropertyAddress(
@@ -43,28 +161,31 @@ final class SpeechListener {
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain)
         AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, DispatchQueue.main) { [weak self] _, _ in
-            self?.microphoneChanged()
+            self?.rebuildAudio(reason: "Microphone changed – switching over")
         }
     }
 
-    private func observe(_ engine: AVAudioEngine) {
-        if let configObserver { NotificationCenter.default.removeObserver(configObserver) }
-        configObserver = NotificationCenter.default.addObserver(
-            forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main
-        ) { [weak self] _ in self?.microphoneChanged() }
+    /// AirPods changing mode (music ↔ phone call) changes the audio format and stops the engine.
+    /// Rebuild straight away on the same microphone and carry on — no long pause, no loop.
+    private func audioConfigurationChanged() {
+        rebuildAudio(reason: "Adjusting to the microphone")
     }
 
-    private func microphoneChanged() {
-        // A new microphone can start with a moment of silence: don't mistake it for a blocked mic.
-        silentSeconds = 0
-        guard isActive, !restartPending else { return }
-        restartPending = true
-        report("Microphone changed – switching over")
-        // Give macOS a moment to finish connecting the new microphone (AirPods take a second).
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+    private func rebuildAudio(reason: String) {
+        silentSeconds = 0 // a switching microphone can be briefly silent; that's not a blocked mic
+        guard !rebuildPending else { return }
+        rebuildPending = true
+        report(reason)
+        // Safety net against any switching loop: if this keeps happening, slow right down.
+        let now = Date()
+        recentRebuilds = recentRebuilds.filter { now.timeIntervalSince($0) < 10 } + [now]
+        let pause = recentRebuilds.count > 4 ? 3.0 : 0.35
+        // A short pause lets macOS finish switching (AirPods take a moment), then rebuild once.
+        DispatchQueue.main.asyncAfter(deadline: .now() + pause) { [weak self] in
             guard let self else { return }
-            self.restartPending = false
-            guard self.isActive else { return }
+            self.rebuildPending = false
+            self.shutDownAudio()
+            guard self.isActive else { _ = self.ensureAudio(); return }
             let remaining = self.giveUpTimer?.fireDate.timeIntervalSinceNow ?? self.directTimeout
             let mode = self.mode
             let wasWoke = self.woke
@@ -73,15 +194,7 @@ final class SpeechListener {
         }
     }
 
-    /// True while OLED is meant to be listening (it stops while it speaks).
-    private var isActive = false
-    private var noMicRetries = 0
-
-    private func report(_ status: String) {
-        if Thread.isMainThread { onStatus?(status) } else {
-            DispatchQueue.main.async { [weak self] in self?.onStatus?(status) }
-        }
-    }
+    // MARK: - Mic level and blocked-mic detection
 
     /// A real microphone always picks up some faint noise. Seconds of perfect silence mean macOS is
     /// blocking the microphone for this copy of OLED, even if System Settings shows it switched on.
@@ -100,7 +213,7 @@ final class SpeechListener {
             everHeardSignal = true
         } else if !everHeardSignal, !reportedSilence {
             silentSeconds += Double(buffer.frameLength) / max(1, buffer.format.sampleRate)
-            if silentSeconds >= 4 {
+            if silentSeconds >= 6 {
                 reportedSilence = true
                 DispatchQueue.main.async { [weak self] in
                     self?.report("Microphone is giving pure silence – permission is blocked for this copy of OLED")
@@ -113,48 +226,11 @@ final class SpeechListener {
     /// Errors that happen in normal use (silence, restarts) and aren't worth showing.
     private static func isRoutine(_ error: NSError) -> Bool {
         if error.domain == "kAFAssistantErrorDomain", [203, 209, 216, 301, 1101, 1107, 1110].contains(error.code) { return true }
-        if error.localizedDescription.lowercased().contains("canceled") || error.localizedDescription.lowercased().contains("cancelled") { return true }
-        if error.localizedDescription.lowercased().contains("no speech") { return true }
-        return false
+        let d = error.localizedDescription.lowercased()
+        return d.contains("canceled") || d.contains("cancelled") || d.contains("no speech")
     }
 
-    private let recognizers: [SFSpeechRecognizer] = [
-        SFSpeechRecognizer(locale: Locale(identifier: "en-GB")),
-        SFSpeechRecognizer(),
-        SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
-    ].compactMap { $0 }
-    private var useOnDevice = true
-
-    /// British English if it's ready, otherwise the Mac's own language, otherwise US English.
-    private func currentRecognizer() -> SFSpeechRecognizer? {
-        recognizers.first(where: { $0.isAvailable })
-    }
-    private var engine = AVAudioEngine()
-    private var request: SFSpeechAudioBufferRecognitionRequest?
-    private var task: SFSpeechRecognitionTask?
-
-    private var mode: Mode = .wake
-    private var woke = false
-    private var commandText = ""
-    private var generation = 0
-    private var silenceTimer: Timer?
-    private var giveUpTimer: Timer?
-    private var refreshTimer: Timer?
-    private var tapInstalled = false
-
-    /// How long to wait for a command after waking, or after a question.
-    var directTimeout: TimeInterval = 7
-
-    static var isAuthorized: Bool {
-        SFSpeechRecognizer.authorizationStatus() == .authorized &&
-        AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
-    }
-
-    // MARK: Control
-
-    /// Why listening can't work, in a form OLED can say out loud.
-    enum Blocker { case microphone, speechRecognition, dictation, noMicrophone, silentMicrophone }
-    var onBlocked: ((Blocker) -> Void)?
+    // MARK: - Listening sessions
 
     /// Starts listening. Returns false (and calls `onBlocked`) when something stops it working.
     @discardableResult
@@ -162,11 +238,13 @@ final class SpeechListener {
         stop()
         if AVCaptureDevice.authorizationStatus(for: .audio) != .authorized {
             report("Microphone access is off")
+            shutDownAudio()
             onBlocked?(.microphone)
             return false
         }
         if SFSpeechRecognizer.authorizationStatus() != .authorized {
             report("Speech Recognition access is off")
+            shutDownAudio()
             onBlocked?(.speechRecognition)
             return false
         }
@@ -183,7 +261,6 @@ final class SpeechListener {
         self.mode = mode
         self.directTimeout = timeout
         isActive = true
-        watchMicrophoneChanges()
         woke = (mode == .direct)
         commandText = ""
         sessionStarted = Date()
@@ -191,24 +268,9 @@ final class SpeechListener {
         sessionPeak = 0
         let gen = generation
 
-        let request = SFSpeechAudioBufferRecognitionRequest()
-        request.shouldReportPartialResults = true
-        // On-device first (works even with Siri/Dictation off); online if the on-device model fails.
-        request.requiresOnDeviceRecognition = useOnDevice && recognizer.supportsOnDeviceRecognition
-        if #available(macOS 13, *) { request.addsPunctuation = false }
-        request.contextualStrings = ["OLED", "Oled", "O.L.E.D.", "O L E D", "Hey OLED", "Oh LED",
-                                     "Firefox", "Safari", "open", "press", "type", "go to", "search for", "weather"]
-        self.request = request
-
-        // A fresh engine each time avoids crashes when the Mac's microphone or its format changes.
-        engine = AVAudioEngine()
-        let engine = self.engine
-        observe(engine)
-        let input = engine.inputNode
-        let format = input.outputFormat(forBus: 0)
-        guard format.channelCount > 0, format.sampleRate > 0 else {
+        guard ensureAudio() else {
             // Often just a microphone mid-switch (AirPods connecting): wait and try again quietly first.
-            if noMicRetries < 4 {
+            if noMicRetries < 5 {
                 noMicRetries += 1
                 report("Waiting for the microphone to connect…")
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
@@ -218,35 +280,21 @@ final class SpeechListener {
                 return true
             }
             noMicRetries = 0
+            isActive = false
             report("No microphone found – check System Settings → Sound → Input")
             onBlocked?(.noMicrophone)
             return false
         }
         noMicRetries = 0
-        do {
-            try OLEDSafe.run {
-                input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self, weak request] buffer, _ in
-                    request?.append(buffer)
-                    self?.measureLevel(buffer)
-                }
-            }
-            tapInstalled = true
-            try OLEDSafe.run { engine.prepare() }
-            var startError: Error?
-            try OLEDSafe.run {
-                do { try engine.start() } catch { startError = error }
-            }
-            if let startError { throw startError }
-        } catch {
-            report("Microphone couldn't start: \(error.localizedDescription)")
-            cleanUpAudio()
-            let gen2 = generation
-            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
-                guard let self, self.generation == gen2 else { return }
-                self.start(mode: mode, timeout: timeout)
-            }
-            return mode == .wake
-        }
+
+        let request = SFSpeechAudioBufferRecognitionRequest()
+        request.shouldReportPartialResults = true
+        // On-device first (works even with Siri/Dictation off); online if the on-device model fails.
+        request.requiresOnDeviceRecognition = useOnDevice && recognizer.supportsOnDeviceRecognition
+        if #available(macOS 13, *) { request.addsPunctuation = false }
+        request.contextualStrings = ["OLED", "Oled", "O.L.E.D.", "O L E D", "Hey OLED", "Oh LED",
+                                     "Firefox", "Safari", "open", "press", "type", "go to", "search for", "weather"]
+        self.request = request
 
         task = recognizer.recognitionTask(with: request) { [weak self] result, error in
             let text = result?.bestTranscription.formattedString
@@ -304,6 +352,13 @@ final class SpeechListener {
         return true
     }
 
+    /// Closes the microphone completely, so the next session opens it fresh (e.g. after a settings change).
+    func resetAudio() {
+        stop()
+        shutDownAudio()
+    }
+
+    /// Ends the current listening session. The microphone stays open so AirPods don't switch modes.
     func stop() {
         generation += 1
         isActive = false
@@ -311,22 +366,11 @@ final class SpeechListener {
         giveUpTimer?.invalidate(); giveUpTimer = nil
         refreshTimer?.invalidate(); refreshTimer = nil
         task?.cancel(); task = nil
-        request?.endAudio(); request = nil
-        cleanUpAudio()
-        micLevel = 0
+        request?.endAudio()
+        request = nil
     }
 
-    private func cleanUpAudio() {
-        let engine = self.engine
-        let hadTap = tapInstalled
-        tapInstalled = false
-        try? OLEDSafe.run {
-            if engine.isRunning { engine.stop() }
-            if hadTap { engine.inputNode.removeTap(onBus: 0) }
-        }
-    }
-
-    // MARK: Handling speech
+    // MARK: - Handling speech
 
     /// Returns the text spoken after the name "OLED", or nil if the name wasn't said.
     static func textAfterWakeWord(in text: String) -> String? {

@@ -182,6 +182,7 @@ struct SettingsView: View {
     @State private var robot = UserDefaults.standard.object(forKey: Speaker.robotKey) as? Double ?? 0.65
     @State private var voiceID = Speaker.selectedVoice?.identifier ?? ""
     @State private var homeTown = Weather.homeTown ?? ""
+    @State private var preferBuiltInMic = AudioDevices.preferBuiltInWithBluetooth
     @State private var openAtLogin = LaunchAtLogin.wanted
     private let voices = Speaker.britishVoices
 
@@ -231,6 +232,14 @@ struct SettingsView: View {
                         .onChange(of: robot) { v in app.speaker.robotLevel = v }
                     Text("Robotic")
                 }
+                Toggle("With AirPods in, listen through the Mac's microphone instead", isOn: $preferBuiltInMic)
+                    .onChange(of: preferBuiltInMic) { on in
+                        AudioDevices.preferBuiltInWithBluetooth = on
+                        app.restartListening()
+                    }
+                Text("Off: OLED listens through your AirPods. On: OLED uses the Mac's microphone and your AirPods keep their best sound quality.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
                 Button("Test voice") {
                     app.say("Hello. I'm OLED. Just say my name whenever you need me.", thenListen: false)
                 }
