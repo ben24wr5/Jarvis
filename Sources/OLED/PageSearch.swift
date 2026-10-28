@@ -195,32 +195,13 @@ enum PageSearch {
     // MARK: Typing into it
 
     private static func typeInto(_ field: AXUIElement, query: String, browser: Browser) {
-        // Put the cursor in the box: ask nicely first, and if that doesn't take, click on it like you would.
-        AXUIElementSetAttributeValue(field, kAXFocusedAttribute as CFString, kCFBooleanTrue)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-            var focused: CFTypeRef?
-            AXUIElementCopyAttributeValue(field, kAXFocusedAttribute as CFString, &focused)
-            if (focused as? Bool) != true { click(field) }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                // Empty the box first so the new search replaces any old one.
-                if AXUIElementSetAttributeValue(field, kAXValueAttribute as CFString, "" as CFString) != .success {
-                    var value: CFTypeRef?
-                    AXUIElementCopyAttributeValue(field, kAXValueAttribute as CFString, &value)
-                    var range = CFRange(location: 0, length: (value as? String)?.utf16.count ?? 0)
-                    if let r = AXValueCreate(.cfRange, &range) {
-                        AXUIElementSetAttributeValue(field, kAXSelectedTextRangeAttribute as CFString, r)
-                    }
-                }
-                DispatchQueue.global(qos: .userInitiated).async {
-                    KeySender.type(query, delay: 30_000)
-                    usleep(250_000)
-                    KeySender.combo(36, []) // Return
-                }
-            }
+        // Put the cursor in the box (click it if needed) and only type once it really has the cursor.
+        DispatchQueue.global(qos: .userInitiated).async {
+            CarefulTyping.enter(query, into: field, pressReturn: true)
         }
     }
 
-    private static func click(_ el: AXUIElement) {
+    static func click(_ el: AXUIElement) {
         var posRef: CFTypeRef?, sizeRef: CFTypeRef?
         guard AXUIElementCopyAttributeValue(el, kAXPositionAttribute as CFString, &posRef) == .success,
               AXUIElementCopyAttributeValue(el, kAXSizeAttribute as CFString, &sizeRef) == .success,
@@ -250,7 +231,8 @@ enum PageSearch {
         let host = (currentHost(in: browser) ?? "").lowercased()
         var target: URL?
         if let match = resultsPages.first(where: { host.hasSuffix($0.host) }) {
-            target = URL(string: String(format: match.url, encoded))
+            // (Not String(format:) — "%3A"-style codes in some addresses would be scrambled into gibberish.)
+            target = URL(string: match.url.replacingOccurrences(of: "%@", with: encoded))
         } else if !host.isEmpty {
             target = URL(string: "https://www.google.com/search?q=site%3A\(host)+\(encoded)")
         } else {
@@ -258,13 +240,11 @@ enum PageSearch {
         }
         guard let target else { return }
         // Go there in the same tab: type it into the address bar (no shortcuts).
-        if AddressBar.focus(in: browser) {
+        if let field = AddressBar.field(in: browser) {
             var address = target.absoluteString
             if address.hasPrefix("https://") { address.removeFirst(8) }
             DispatchQueue.global(qos: .userInitiated).async {
-                KeySender.type(address, delay: 20_000)
-                usleep(200_000)
-                KeySender.combo(36, [])
+                CarefulTyping.enter(address, into: field, pressReturn: true)
             }
         } else {
             _ = browser.open(target)

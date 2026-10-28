@@ -593,21 +593,17 @@ final class KeyboardController {
                 case .current: break
                 }
                 DispatchQueue.main.asyncAfter(deadline: .now() + wait) {
-                    // Click straight into the address bar (no shortcut) and clear it.
-                    guard Self.isFront(browser), AddressBar.focus(in: browser) else {
+                    // Click straight into the address bar (no shortcut), empty it, type exactly the address,
+                    // check it's right, then press Return.
+                    guard Self.isFront(browser), let field = AddressBar.field(in: browser) else {
                         _ = browser.open(url); opened() // couldn't reach the address bar: open the site directly
                         return
                     }
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-                        guard Self.isFront(browser) else { _ = browser.open(url); opened(); return }
-                        DispatchQueue.global(qos: .userInitiated).async {
-                            Self.typeNow(address)
-                            usleep(200_000)
-                            DispatchQueue.main.async {
-                                Self.post(key: 36, flags: []) // Return, to go to the site
-                                Self.makeSureItOpened(url, in: browser)
-                                opened()
-                            }
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        CarefulTyping.enter(address, into: field, pressReturn: true)
+                        DispatchQueue.main.async {
+                            Self.makeSureItOpened(url, in: browser)
+                            opened()
                         }
                     }
                 }
@@ -676,7 +672,7 @@ final class KeyboardController {
 /// Finds Safari's or Firefox's address bar through Accessibility and puts the cursor in it, empty,
 /// the same as clicking on it — without using any keyboard shortcut.
 enum AddressBar {
-    private static func field(in browser: Browser) -> AXUIElement? {
+    static func field(in browser: Browser) -> AXUIElement? {
         guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: browser.bundleID)
             .first(where: { !$0.isTerminated }) else { return nil }
         let axApp = AXUIElementCreateApplication(app.processIdentifier)
