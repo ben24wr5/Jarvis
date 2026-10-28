@@ -439,9 +439,15 @@ final class KeyboardController {
     }
 
     private func bringBackTargetApp(then work: @escaping () -> Void) {
+        // If OLED's own window is in front, hand the keys back to the app you were using.
         if NSApp.isActive, let target = lastExternalApp, !target.isTerminated {
-            target.activate(options: [.activateIgnoringOtherApps])
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)
+            if #available(macOS 14.0, *) {
+                NSApp.yieldActivation(to: target)
+                target.activate()
+            } else {
+                target.activate(options: [.activateIgnoringOtherApps])
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
         } else {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: work)
         }
@@ -468,16 +474,19 @@ final class KeyboardController {
                 return
             }
             // A freshly opened browser needs a moment for its window to be ready.
-            let settle = alreadyRunning ? 0.35 : 1.2
+            let settle = alreadyRunning ? 0.35 : 1.5
             DispatchQueue.main.asyncAfter(deadline: .now() + settle) {
-                guard Self.isFront(browser) else { _ = browser.open(url); return }
-                Self.post(key: 17, flags: .maskCommand) // Command-T: new tab, cursor in the address bar
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                // No shortcuts: click straight into the browser's own address bar and clear it.
+                guard Self.isFront(browser), AddressBar.focus(in: browser) else {
+                    _ = browser.open(url) // couldn't reach the address bar: open the site directly
+                    return
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
                     guard Self.isFront(browser) else { _ = browser.open(url); return }
                     DispatchQueue.global(qos: .userInitiated).async {
                         Self.typeNow(address)
                         usleep(200_000)
-                        DispatchQueue.main.async { Self.post(key: 36, flags: []) } // Return
+                        DispatchQueue.main.async { Self.post(key: 36, flags: []) } // Return, to go to the site
                     }
                 }
             }
@@ -530,6 +539,72 @@ final class KeyboardController {
         bringBackTargetApp {
             DispatchQueue.global(qos: .userInitiated).async { KeySender.type(text, delay: 15_000) }
         }
+    }
+}
+
+/// Finds Safari's or Firefox's address bar through Accessibility and puts the cursor in it, empty,
+/// the same as clicking on it — without using any keyboard shortcut.
+enum AddressBar {
+    static func focus(in browser: Browser) -> Bool {
+        guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: browser.bundleID).first else { return false }
+        let axApp = AXUIElementCreateApplication(app.processIdentifier)
+        var windowRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(axApp, kAXFocusedWindowAttribute as CFString, &windowRef) == .success,
+              let windowRef, CFGetTypeID(windowRef) == AXUIElementGetTypeID() else { return false }
+        let window = windowRef as! AXUIElement
+        guard let field = findField(from: window) else { return false }
+
+        AXUIElementSetAttributeValue(field, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+        // Empty it so the new address replaces the old one rather than being added to it.
+        if AXUIElementSetAttributeValue(field, kAXValueAttribute as CFString, "" as CFString) != .success {
+            var value: CFTypeRef?
+            AXUIElementCopyAttributeValue(field, kAXValueAttribute as CFString, &value)
+            let length = (value as? String)?.utf16.count ?? 0
+            var range = CFRange(location: 0, length: length)
+            if let rangeValue = AXValueCreate(.cfRange, &range) {
+                AXUIElementSetAttributeValue(field, kAXSelectedTextRangeAttribute as CFString, rangeValue)
+            }
+        }
+        // Confirm it really has the cursor.
+        var focused: CFTypeRef?
+        AXUIElementCopyAttributeValue(field, kAXFocusedAttribute as CFString, &focused)
+        return (focused as? Bool) ?? true
+    }
+
+    private static func attribute(_ element: AXUIElement, _ name: String) -> String {
+        var ref: CFTypeRef?
+        AXUIElementCopyAttributeValue(element, name as CFString, &ref)
+        return (ref as? String) ?? ""
+    }
+
+    /// Searches the window's controls (not the web page itself) for the address field.
+    private static func findField(from window: AXUIElement) -> AXUIElement? {
+        var queue: [(AXUIElement, Int)] = [(window, 0)]
+        var fallback: AXUIElement?
+        var visited = 0
+        while !queue.isEmpty, visited < 600 {
+            let (element, depth) = queue.removeFirst()
+            visited += 1
+            let role = attribute(element, kAXRoleAttribute)
+            if role == "AXWebArea" { continue } // skip the page content
+            if role == kAXTextFieldRole as String || role == kAXComboBoxRole as String {
+                let id = attribute(element, "AXIdentifier").lowercased()
+                let desc = (attribute(element, kAXDescriptionAttribute) + " " + attribute(element, kAXTitleAttribute)
+                            + " " + attribute(element, "AXPlaceholderValue")).lowercased()
+                if id.contains("address") || id.contains("url") || desc.contains("address") || desc.contains("search or enter")
+                    || desc.contains("search with") || desc.contains("smart search") || desc.contains("url") {
+                    return element
+                }
+                if fallback == nil { fallback = element }
+            }
+            guard depth < 14 else { continue }
+            var children: CFTypeRef?
+            if AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &children) == .success,
+               let list = children as? [AXUIElement] {
+                queue.append(contentsOf: list.map { ($0, depth + 1) })
+            }
+        }
+        return fallback
     }
 }
 

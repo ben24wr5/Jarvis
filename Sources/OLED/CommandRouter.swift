@@ -124,7 +124,27 @@ final class CommandRouter {
         return p.split(separator: " ").map { $0.prefix(1).uppercased() + $0.dropFirst() }.joined(separator: " ")
     }
 
-    private static let cancelWords = ["cancel", "stop", "never mind", "nevermind", "forget it", "nothing", "no thanks"]
+    /// Shortcuts OLED only uses when you say them. (phrases, key, modifiers, what OLED says)
+    private static let namedShortcuts: [([String], CGKeyCode, CGEventFlags, String)] = [
+        (["new tab", "open a new tab", "open new tab", "open up a new tab", "a new tab", "new page", "open a new page"], 17, .maskCommand, "New tab."),
+        (["close tab", "close this tab", "close the tab", "close page", "close this page"], 13, .maskCommand, "Closed."),
+        (["new window", "open a new window", "open new window"], 45, .maskCommand, "New window."),
+        (["copy", "copy that", "copy this", "copy it"], 8, .maskCommand, "Copied."),
+        (["paste", "paste that", "paste it", "paste this"], 9, .maskCommand, "Pasted."),
+        (["cut", "cut that", "cut this", "cut it"], 7, .maskCommand, "Cut."),
+        (["undo", "undo that"], 6, .maskCommand, "Undone."),
+        (["redo", "redo that"], 6, [.maskCommand, .maskShift], "Redone."),
+        (["select all", "select everything", "highlight everything"], 0, .maskCommand, "Selected."),
+        (["save", "save it", "save this", "save that"], 1, .maskCommand, "Saved."),
+        (["refresh", "reload", "refresh the page", "reload the page", "refresh page", "reload page"], 15, .maskCommand, "Refreshing."),
+        (["go back", "back", "previous page"], 33, .maskCommand, "Going back."),
+        (["go forward", "forward", "next page"], 30, .maskCommand, "Going forward."),
+        (["find on page", "find on this page", "search this page"], 3, .maskCommand, "Find."),
+        (["print", "print this", "print it"], 35, .maskCommand, "Print."),
+        (["minimise", "minimize", "minimise window", "minimize window", "minimise this", "minimize this"], 46, .maskCommand, "Minimised.")
+    ]
+
+    private static let cancelWords =["cancel", "stop", "never mind", "nevermind", "forget it", "nothing", "no thanks"]
     private static let openVerbs = ["open up ", "open ", "launch ", "start up ", "start ", "run ", "go to ", "go on ", "visit ",
                                     "take me to ", "navigate to ", "show me ", "load ", "bring up "]
 
@@ -179,6 +199,27 @@ final class CommandRouter {
         // 2. Cancel
         if Self.cancelWords.contains(politeStripped) {
             reply(Reply(text: "Okay.", expectsAnswer: false)); return
+        }
+
+        // 2. Keyboard shortcuts — only when you ask for them by name.
+        //    "new tab", "copy", "paste", "close tab"… and "open a new tab and go to YouTube".
+        for (phrases, key, flags, spoken) in Self.namedShortcuts {
+            for phrase in phrases {
+                if politeStripped == phrase || text == phrase {
+                    guard AccessibilityPermission.isGranted else { reply(needAccessibility()); return }
+                    keyboard.press(key: key, flags: flags)
+                    reply(Reply(text: spoken, expectsAnswer: false)); return
+                }
+                for joiner in [" and ", " then "] where politeStripped.hasPrefix(phrase + joiner) {
+                    guard AccessibilityPermission.isGranted else { reply(needAccessibility()); return }
+                    keyboard.press(key: key, flags: flags)
+                    let rest = String(politeStripped.dropFirst(phrase.count + joiner.count))
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+                        self?.handle(rest, reply: reply)
+                    }
+                    return
+                }
+            }
         }
 
         // 2a. Shut down, restart, sleep, lock
