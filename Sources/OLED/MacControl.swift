@@ -20,6 +20,84 @@ enum AccessibilityPermission {
     }
 }
 
+// MARK: - Power: shut down, restart, sleep, lock
+
+enum PowerAction {
+    case shutDown, restart, sleep, lock
+
+    var confirmQuestion: String? {
+        switch self {
+        case .shutDown: return "Are you sure you want me to shut down your Mac?"
+        case .restart: return "Are you sure you want me to restart your Mac?"
+        default: return nil
+        }
+    }
+
+    var goodbye: String {
+        switch self {
+        case .shutDown: return "Shutting down. Goodbye."
+        case .restart: return "Restarting. See you in a moment."
+        case .sleep: return "Putting your Mac to sleep."
+        case .lock: return "Locking the screen."
+        }
+    }
+
+    /// Recognises "shut down", "turn off the computer", "restart", "reboot", "sleep", "lock the screen"…
+    static func from(_ text: String) -> PowerAction? {
+        let t = " " + text + " "
+        let machine = ["mac", "computer", "laptop", "macbook", "imac", "system", "pc"]
+        let mentionsMachine = machine.contains { t.contains(" \($0) ") || t.contains(" \($0)") }
+        if t.contains(" shut down") || t.contains(" shutdown") || t.contains(" power off") || t.contains(" power down")
+            || (t.contains(" turn off") && mentionsMachine) || (t.contains(" switch off") && mentionsMachine) {
+            return .shutDown
+        }
+        if t.contains(" restart") || t.contains(" reboot") { return .restart }
+        if t.contains(" lock") && (t.contains(" screen") || mentionsMachine || text.trimmingCharacters(in: .whitespaces) == "lock") {
+            return .lock
+        }
+        if (t.contains(" sleep") && (mentionsMachine || text.trimmingCharacters(in: .whitespaces) == "sleep"))
+            || t.contains(" sleep mode") {
+            return .sleep
+        }
+        return nil
+    }
+
+    func perform() {
+        switch self {
+        case .shutDown: Self.runAppleScript("tell application \"System Events\" to shut down")
+        case .restart: Self.runAppleScript("tell application \"System Events\" to restart")
+        case .sleep: Self.run("/usr/bin/pmset", ["sleepnow"])
+        case .lock:
+            // Control-Command-Q: the standard macOS "Lock Screen" shortcut.
+            let src = CGEventSource(stateID: .hidSystemState)
+            let down = CGEvent(keyboardEventSource: src, virtualKey: 12, keyDown: true)
+            let up = CGEvent(keyboardEventSource: src, virtualKey: 12, keyDown: false)
+            down?.flags = [.maskCommand, .maskControl]
+            up?.flags = [.maskCommand, .maskControl]
+            down?.post(tap: .cghidEventTap)
+            up?.post(tap: .cghidEventTap)
+        }
+    }
+
+    private static func runAppleScript(_ source: String) {
+        var error: NSDictionary?
+        NSAppleScript(source: source)?.executeAndReturnError(&error)
+        if error != nil {
+            // Fallback if Automation permission was refused: ask the login window directly.
+            run("/usr/bin/osascript", ["-e", source.contains("restart")
+                ? "tell application \"loginwindow\" to «event aevtrrst»"
+                : "tell application \"loginwindow\" to «event aevtrsdn»"])
+        }
+    }
+
+    private static func run(_ path: String, _ args: [String]) {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: path)
+        p.arguments = args
+        try? p.run()
+    }
+}
+
 // MARK: - Opening apps
 
 enum AppFinder {

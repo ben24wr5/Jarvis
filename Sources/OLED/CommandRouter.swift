@@ -16,6 +16,12 @@ final class CommandRouter {
     private var pendingName = ""
     private var browserAsks = 0
     private var pendingWeatherTomorrow: Bool?
+    private var pendingPower: PowerAction?
+
+    /// Carries out a power action once OLED has finished saying goodbye.
+    private func schedule(_ action: PowerAction) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { action.perform() }
+    }
 
     private static let jokes = [
         "Why don't skeletons fight each other? They don't have the guts.",
@@ -145,6 +151,17 @@ final class CommandRouter {
             reply(Reply(text: "Never mind, I'll leave it for now.", expectsAnswer: false)); return
         }
 
+        // 1a. Answering "Are you sure you want me to shut down / restart?"
+        if let action = pendingPower {
+            pendingPower = nil
+            let yes = ["yes", "yeah", "yep", "yup", "sure", "do it", "go ahead", "confirm", "ok", "okay", "please", "affirmative", "of course"]
+            if yes.contains(where: { text == $0 || text.hasPrefix($0 + " ") || text.hasSuffix(" " + $0) }) {
+                schedule(action)
+                reply(Reply(text: action.goodbye, expectsAnswer: false)); return
+            }
+            reply(Reply(text: "Okay, I won't.", expectsAnswer: false)); return
+        }
+
         // 1b. Answering "Which town should I check?"
         if let tomorrow = pendingWeatherTomorrow {
             pendingWeatherTomorrow = nil
@@ -160,6 +177,17 @@ final class CommandRouter {
         // 2. Cancel
         if Self.cancelWords.contains(politeStripped) {
             reply(Reply(text: "Okay.", expectsAnswer: false)); return
+        }
+
+        // 2a. Shut down, restart, sleep, lock
+        if let action = PowerAction.from(politeStripped) {
+            if let question = action.confirmQuestion {
+                pendingPower = action
+                reply(Reply(text: question, expectsAnswer: true)); return
+            }
+            if action == .lock, !AccessibilityPermission.isGranted { reply(needAccessibility()); return }
+            schedule(action)
+            reply(Reply(text: action.goodbye, expectsAnswer: false)); return
         }
 
         // 2b. Everyday questions answered right here on the Mac (like Siri)
