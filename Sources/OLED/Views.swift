@@ -54,10 +54,10 @@ struct OpenSettingsButton: View {
 /// A standard macOS "Settings" button in the top-right corner.
 struct SettingsGearButton: View {
     private var label: some View {
-        Label("Settings", systemImage: "gearshape")
-            .font(.system(size: 14, weight: .medium))
-            .padding(.horizontal, 4)
-            .frame(minHeight: 26)
+        Image(systemName: "gearshape")
+            .font(.system(size: 15, weight: .medium))
+            .frame(width: 22, height: 26)
+            .accessibilityLabel("Settings")
     }
 
     var body: some View {
