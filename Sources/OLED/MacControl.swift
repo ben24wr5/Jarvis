@@ -78,13 +78,7 @@ enum PowerAction {
         case .sleep: Self.run("/usr/bin/pmset", ["sleepnow"])
         case .lock:
             // Control-Command-Q: the standard macOS "Lock Screen" shortcut.
-            let src = CGEventSource(stateID: .hidSystemState)
-            let down = CGEvent(keyboardEventSource: src, virtualKey: 12, keyDown: true)
-            let up = CGEvent(keyboardEventSource: src, virtualKey: 12, keyDown: false)
-            down?.flags = [.maskCommand, .maskControl]
-            up?.flags = [.maskCommand, .maskControl]
-            down?.post(tap: .cghidEventTap)
-            up?.post(tap: .cghidEventTap)
+            KeySender.combo(12, [.maskCommand, .maskControl])
         }
     }
 
@@ -521,56 +515,78 @@ final class KeyboardController {
     }
 
     private static func post(key: CGKeyCode, flags: CGEventFlags) {
-        let src = CGEventSource(stateID: .hidSystemState)
-        let down = CGEvent(keyboardEventSource: src, virtualKey: key, keyDown: true)
-        let up = CGEvent(keyboardEventSource: src, virtualKey: key, keyDown: false)
-        down?.flags = flags
-        up?.flags = flags
-        down?.post(tap: .cghidEventTap)
-        up?.post(tap: .cghidEventTap)
+        KeySender.combo(key, flags)
     }
 
     private static func typeNow(_ text: String) {
-        let src = CGEventSource(stateID: .hidSystemState)
-        for scalar in text.utf16 {
-            var ch = scalar
-            let down = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: true)
-            let up = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: false)
-            down?.keyboardSetUnicodeString(stringLength: 1, unicodeString: &ch)
-            up?.keyboardSetUnicodeString(stringLength: 1, unicodeString: &ch)
-            down?.post(tap: .cghidEventTap)
-            up?.post(tap: .cghidEventTap)
-            usleep(25_000)
-        }
+        KeySender.type(text, delay: 30_000)
     }
 
     func press(key: CGKeyCode, flags: CGEventFlags) {
-        bringBackTargetApp {
-            let src = CGEventSource(stateID: .hidSystemState)
-            let down = CGEvent(keyboardEventSource: src, virtualKey: key, keyDown: true)
-            let up = CGEvent(keyboardEventSource: src, virtualKey: key, keyDown: false)
-            down?.flags = flags
-            up?.flags = flags
-            down?.post(tap: .cghidEventTap)
-            up?.post(tap: .cghidEventTap)
-        }
+        bringBackTargetApp { KeySender.combo(key, flags) }
     }
 
     func type(_ text: String) {
         bringBackTargetApp {
-            DispatchQueue.global(qos: .userInitiated).async {
-                let src = CGEventSource(stateID: .hidSystemState)
-                for scalar in text.utf16 {
-                    var ch = scalar
-                    let down = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: true)
-                    let up = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: false)
-                    down?.keyboardSetUnicodeString(stringLength: 1, unicodeString: &ch)
-                    up?.keyboardSetUnicodeString(stringLength: 1, unicodeString: &ch)
-                    down?.post(tap: .cghidEventTap)
-                    up?.post(tap: .cghidEventTap)
-                    usleep(12_000)
-                }
+            DispatchQueue.global(qos: .userInitiated).async { KeySender.type(text, delay: 15_000) }
+        }
+    }
+}
+
+/// Sends key presses exactly like a real keyboard: modifier keys (Command, Shift…) are pressed down
+/// AND released, and plain typing never carries a held modifier. (Before, Command stayed "held" after
+/// Command-T, so typing "youtube.com" became Command-Y, Command-O, Command-T… — beeps and extra tabs.)
+enum KeySender {
+    /// Its own private keyboard, so the real keyboard's state can't leak in.
+    private static let source = CGEventSource(stateID: .privateState)
+
+    private static let modifierKeys: [(CGEventFlags, CGKeyCode)] = [
+        (.maskCommand, 55), (.maskShift, 56), (.maskAlternate, 58), (.maskControl, 59)
+    ]
+
+    private static let letterCodes: [Character: CGKeyCode] = [
+        "a": 0, "s": 1, "d": 2, "f": 3, "h": 4, "g": 5, "z": 6, "x": 7, "c": 8, "v": 9, "b": 11, "q": 12,
+        "w": 13, "e": 14, "r": 15, "y": 16, "t": 17, "1": 18, "2": 19, "3": 20, "4": 21, "6": 22, "5": 23,
+        "9": 25, "7": 26, "8": 28, "0": 29, "o": 31, "u": 32, "i": 34, "p": 35, "l": 37, "j": 38, "k": 40,
+        "n": 45, "m": 46, ".": 47, "/": 44, "-": 27, " ": 49
+    ]
+
+    private static func send(_ key: CGKeyCode, down: Bool, flags: CGEventFlags, unicode: UniChar? = nil) {
+        guard let event = CGEvent(keyboardEventSource: source, virtualKey: key, keyDown: down) else { return }
+        event.flags = flags
+        if var u = unicode { event.keyboardSetUnicodeString(stringLength: 1, unicodeString: &u) }
+        event.post(tap: .cghidEventTap)
+    }
+
+    /// A shortcut such as Command-T: hold the modifiers, tap the key, then let go of the modifiers.
+    static func combo(_ key: CGKeyCode, _ flags: CGEventFlags) {
+        var held: CGEventFlags = []
+        let used = modifierKeys.filter { flags.contains($0.0) }
+        for (flag, code) in used {
+            held.insert(flag)
+            send(code, down: true, flags: held)
+            usleep(8_000)
+        }
+        send(key, down: true, flags: flags)
+        usleep(15_000)
+        send(key, down: false, flags: flags)
+        usleep(8_000)
+        for (flag, code) in used.reversed() {
+            held.remove(flag)
+            send(code, down: false, flags: held)
+            usleep(8_000)
+        }
+    }
+
+    /// Types text with no modifier keys held.
+    static func type(_ text: String, delay: useconds_t) {
+        for ch in text {
+            let code = letterCodes[Character(ch.lowercased())] ?? 0
+            for unit in String(ch).utf16 {
+                send(code, down: true, flags: [], unicode: unit)
+                send(code, down: false, flags: [], unicode: unit)
             }
+            usleep(delay)
         }
     }
 }
