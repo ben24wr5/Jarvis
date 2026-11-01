@@ -236,6 +236,25 @@ final class CommandRouter {
             }
         }
 
+        // 2. Unlock the Mac with the PIN saved in Settings (off unless switched on there)
+        if ScreenUnlock.isRequest(politeStripped) {
+            guard UnlockStore.isEnabled, let pin = UnlockStore.pin else {
+                return reply(Reply(text: "Voice unlock is switched off. Turn it on and save your PIN in my Settings first.", expectsAnswer: false))
+            }
+            guard ScreenUnlock.isLocked else {
+                return reply(Reply(text: "Your Mac is already unlocked.", expectsAnswer: false))
+            }
+            guard AccessibilityPermission.isGranted else { reply(needAccessibility()); return }
+            ScreenUnlock.unlock(with: pin)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
+                if ScreenUnlock.isLocked {
+                    // Be honest if macOS blocked it.
+                    reply(Reply(text: "I typed your PIN, but macOS didn't let me unlock the screen. Your Mac's security is blocking apps from typing on the lock screen.", expectsAnswer: false))
+                }
+            }
+            reply(Reply(text: "Unlocking.", expectsAnswer: false)); return
+        }
+
         // 2a. Shut down, restart, sleep, lock
         if let action = PowerAction.from(politeStripped) {
             if let question = action.confirmQuestion {

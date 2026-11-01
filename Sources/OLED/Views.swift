@@ -231,6 +231,9 @@ struct SettingsView: View {
     @State private var voiceID = Speaker.selectedVoice?.identifier ?? ""
     @State private var homeTown = Weather.homeTown ?? ""
     @State private var preferBuiltInMic = AudioDevices.preferBuiltInWithBluetooth
+    @State private var unlockOn = UnlockStore.isEnabled
+    @State private var unlockPin = ""
+    @State private var unlockSaved = UnlockStore.pin != nil
     @State private var openAtLogin = LaunchAtLogin.wanted
     private let voices = Speaker.britishVoices
 
@@ -309,6 +312,32 @@ struct SettingsView: View {
             Section("Startup") {
                 Toggle("Open OLED when my Mac starts", isOn: $openAtLogin)
                     .onChange(of: openAtLogin) { on in LaunchAtLogin.wanted = on }
+            }
+
+            Section("Voice unlock") {
+                Toggle("Unlock my Mac when I say “OLED, unlock”", isOn: $unlockOn)
+                    .onChange(of: unlockOn) { on in UnlockStore.isEnabled = on }
+                SecureField("Mac login PIN or password", text: $unlockPin)
+                HStack {
+                    Button("Save PIN") {
+                        UnlockStore.pin = unlockPin
+                        unlockPin = ""
+                        unlockSaved = UnlockStore.pin != nil
+                    }
+                    .disabled(unlockPin.isEmpty)
+                    if unlockSaved { Text("Saved in Keychain").foregroundColor(.secondary) }
+                    Spacer()
+                    if unlockSaved {
+                        Button("Remove PIN") {
+                            UnlockStore.pin = nil
+                            unlockSaved = false
+                            unlockOn = false
+                        }
+                    }
+                }
+                Text("Anyone whose voice OLED hears could use this, so only switch it on if you're happy with that. Your PIN is kept in the macOS Keychain. Some macOS versions block apps from typing on the lock screen — if so, OLED will tell you.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
             }
 
             Section("Themes") {

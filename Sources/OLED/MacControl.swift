@@ -101,6 +101,68 @@ enum PowerAction {
     }
 }
 
+// MARK: - Voice unlock
+
+enum ScreenUnlock {
+    /// Whether the screen is locked right now.
+    static var isLocked: Bool {
+        guard let info = CGSessionCopyCurrentDictionary() as? [String: Any] else { return false }
+        if let b = info["CGSSessionScreenIsLocked"] as? Bool { return b }
+        return (info["CGSSessionScreenIsLocked"] as? Int) == 1
+    }
+
+    /// "unlock", "unlock my mac", "unlock the screen", "unlock my macbook"…
+    static func isRequest(_ text: String) -> Bool {
+        let t = text.trimmingCharacters(in: .whitespaces)
+        return t == "unlock" || t.hasPrefix("unlock ")
+    }
+
+    /// Wakes the screen, types the PIN into the lock screen and presses Return.
+    /// The PIN's characters are typed from a background thread and never logged or spoken.
+    static func unlock(with pin: String) {
+        let wake = Process()
+        wake.executableURL = URL(fileURLWithPath: "/usr/bin/caffeinate")
+        wake.arguments = ["-u", "-t", "3"]
+        try? wake.run()
+        DispatchQueue.global(qos: .userInitiated).async {
+            usleep(1_200_000)
+            postKey(56, char: nil)       // tap Shift to bring up the password box
+            usleep(700_000)
+            for ch in pin { postKey(code(for: ch), char: ch) }
+            usleep(200_000)
+            postKey(36, char: nil)       // Return
+        }
+    }
+
+    private static func code(for ch: Character) -> CGKeyCode {
+        let map: [Character: CGKeyCode] = [
+            "0": 29, "1": 18, "2": 19, "3": 20, "4": 21, "5": 23, "6": 22, "7": 26, "8": 28, "9": 25,
+            "a": 0, "s": 1, "d": 2, "f": 3, "h": 4, "g": 5, "z": 6, "x": 7, "c": 8, "v": 9, "b": 11, "q": 12,
+            "w": 13, "e": 14, "r": 15, "y": 16, "t": 17, "o": 31, "u": 32, "i": 34, "p": 35, "l": 37, "j": 38,
+            "k": 40, "n": 45, "m": 46, " ": 49
+        ]
+        return map[Character(ch.lowercased())] ?? 0
+    }
+
+    private static func postKey(_ key: CGKeyCode, char: Character?) {
+        let src = CGEventSource(stateID: .hidSystemState)
+        guard let down = CGEvent(keyboardEventSource: src, virtualKey: key, keyDown: true),
+              let up = CGEvent(keyboardEventSource: src, virtualKey: key, keyDown: false) else { return }
+        let shifted = char.map { $0.isUppercase } ?? false
+        down.flags = shifted ? .maskShift : []
+        up.flags = shifted ? .maskShift : []
+        if let char {
+            var units = Array(String(char).utf16)
+            down.keyboardSetUnicodeString(stringLength: units.count, unicodeString: &units)
+            up.keyboardSetUnicodeString(stringLength: units.count, unicodeString: &units)
+        }
+        down.post(tap: .cghidEventTap)
+        usleep(20_000)
+        up.post(tap: .cghidEventTap)
+        usleep(60_000)
+    }
+}
+
 // MARK: - Opening apps
 
 enum AppFinder {

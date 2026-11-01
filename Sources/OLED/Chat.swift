@@ -5,6 +5,45 @@ import ObjCSupport
 import FoundationModels
 #endif
 
+/// The Mac login PIN/password for voice unlock, kept in the macOS Keychain (never in a file).
+/// Voice unlock is off until it's switched on in Settings.
+enum UnlockStore {
+    private static let service = "OLED"
+    private static let account = "voice-unlock-pin"
+    static let enabledKey = "voiceUnlockEnabled"
+
+    static var isEnabled: Bool {
+        get { UserDefaults.standard.bool(forKey: enabledKey) }
+        set { UserDefaults.standard.set(newValue, forKey: enabledKey) }
+    }
+
+    private static var base: [String: Any] {
+        [kSecClass as String: kSecClassGenericPassword,
+         kSecAttrService as String: service,
+         kSecAttrAccount as String: account]
+    }
+
+    static var pin: String? {
+        get {
+            var query = base
+            query[kSecReturnData as String] = true
+            query[kSecMatchLimit as String] = kSecMatchLimitOne
+            var item: CFTypeRef?
+            guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
+                  let data = item as? Data, let value = String(data: data, encoding: .utf8), !value.isEmpty else { return nil }
+            return value
+        }
+        set {
+            SecItemDelete(base as CFDictionary)
+            guard let newValue, !newValue.isEmpty else { return }
+            var add = base
+            add[kSecValueData as String] = Data(newValue.utf8)
+            add[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+            SecItemAdd(add as CFDictionary, nil)
+        }
+    }
+}
+
 /// Removes any Claude API key saved by older versions of OLED. OLED no longer uses one.
 enum LegacyKeyCleanup {
     static func run() {
