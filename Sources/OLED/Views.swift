@@ -290,17 +290,6 @@ struct SettingsView: View {
                 Text("Off: OLED listens through your AirPods. On: OLED uses the Mac's microphone and your AirPods keep their best sound quality.")
                     .font(.caption)
                     .foregroundColor(.secondary)
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("MacBook password (to unlock by voice)")
-                    TextField("Type your MacBook password", text: $unlockPassword)
-                        .textFieldStyle(.roundedBorder)
-                        .onChange(of: unlockPassword) { value in UnlockStore.pin = value }
-                    Text(unlockPassword.isEmpty
-                         ? "Type your password here, then say “OLED, unlock” when your Mac is locked."
-                         : "Saved. Say “OLED, unlock” when your Mac is locked and I'll type it in for you.")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
                 Button("Test voice") {
                     app.say("Hello. I'm OLED. Just say my name whenever you need me.", thenListen: false)
                 }
@@ -309,6 +298,18 @@ struct SettingsView: View {
                     .foregroundColor(.secondary)
             }
 
+
+            Section("MacBook password") {
+                Text("MacBook password saves here")
+                TextField("Type your MacBook password", text: $unlockPassword)
+                    .textFieldStyle(.roundedBorder)
+                    .onChange(of: unlockPassword) { value in UnlockStore.pin = value }
+                Text(unlockPassword.isEmpty
+                     ? "Type your password in the box. Then, when your Mac is locked, say “OLED, unlock” and I'll put it in and unlock it."
+                     : "Saved. When your Mac is locked, say “OLED, unlock” and I'll put your password in and unlock it.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
 
             Section("Weather") {
                 TextField("Home town or city", text: $homeTown)
