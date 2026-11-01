@@ -5,43 +5,26 @@ import ObjCSupport
 import FoundationModels
 #endif
 
-/// The Mac login PIN/password for voice unlock, kept in the macOS Keychain (never in a file).
-/// Voice unlock is off until it's switched on in Settings.
+/// Your MacBook password for voice unlock, typed into Settings → Voice and kept in OLED's own settings
+/// (not the Keychain app, which is for website passwords). Voice unlock works once a password is saved.
 enum UnlockStore {
-    private static let service = "OLED"
-    private static let account = "voice-unlock-pin"
-    static let enabledKey = "voiceUnlockEnabled"
-
-    static var isEnabled: Bool {
-        get { UserDefaults.standard.bool(forKey: enabledKey) }
-        set { UserDefaults.standard.set(newValue, forKey: enabledKey) }
-    }
-
-    private static var base: [String: Any] {
-        [kSecClass as String: kSecClassGenericPassword,
-         kSecAttrService as String: service,
-         kSecAttrAccount as String: account]
-    }
+    private static let key = "macPasswordForUnlock"
 
     static var pin: String? {
         get {
-            var query = base
-            query[kSecReturnData as String] = true
-            query[kSecMatchLimit as String] = kSecMatchLimitOne
-            var item: CFTypeRef?
-            guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
-                  let data = item as? Data, let value = String(data: data, encoding: .utf8), !value.isEmpty else { return nil }
-            return value
+            let v = UserDefaults.standard.string(forKey: key) ?? ""
+            return v.isEmpty ? nil : v
         }
         set {
-            SecItemDelete(base as CFDictionary)
-            guard let newValue, !newValue.isEmpty else { return }
-            var add = base
-            add[kSecValueData as String] = Data(newValue.utf8)
-            add[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
-            SecItemAdd(add as CFDictionary, nil)
+            if let newValue, !newValue.isEmpty {
+                UserDefaults.standard.set(newValue, forKey: key)
+            } else {
+                UserDefaults.standard.removeObject(forKey: key)
+            }
         }
     }
+
+    static var isEnabled: Bool { pin != nil }
 }
 
 /// Removes any Claude API key saved by older versions of OLED. OLED no longer uses one.
@@ -66,7 +49,8 @@ final class ChatClient {
     Here's what I can do. I can open any app on your MacBook. Just say open, and the app's name. \
     I use Safari and Firefox only for websites. Say go to, and any website, and I'll ask which browser, \
     then type it in for you. I can also search the web, type and press keys, tell you the time, date and weather, \
-    answer questions and tell jokes. And I can log you out, put your Mac to sleep, lock it, restart it, or shut it down. \
+    answer questions and tell jokes. And I can log you out, put your Mac to sleep, lock it, restart it, or shut it down, \
+    and unlock it with your password when it's locked. \
     You can talk to me even while I'm speaking. Just say my name.
     """
 
@@ -78,8 +62,8 @@ final class ChatClient {
     Keep replies short, one to three sentences, unless asked for more. If something is very recent and you \
     can't know it, say so briefly. \
     OLED's own system already carries out actions on the Mac: opening apps, opening and searching websites in \
-    Firefox or Safari, typing, pressing keys, weather, and logging out, shutting down, restarting, sleeping or \
-    locking the Mac. \
+    Firefox or Safari, typing, pressing keys, weather, and logging out, shutting down, restarting, sleeping, \
+    locking and unlocking the Mac. \
     You only answer questions and chat. Never say you can't control the Mac and never tell the user to do \
     something themselves. If the user seems to want an action, reply only: "Just tell me what to do, for example, open Safari." \
     Never say your own name and never introduce yourself or start a reply with your name. Just answer the question directly.

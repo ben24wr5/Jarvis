@@ -236,10 +236,10 @@ final class CommandRouter {
             }
         }
 
-        // 2. Unlock the Mac with the PIN saved in Settings (off unless switched on there)
+        // 2. Unlock the Mac with the password typed into Settings → Voice
         if ScreenUnlock.isRequest(politeStripped) {
-            guard UnlockStore.isEnabled, let pin = UnlockStore.pin else {
-                return reply(Reply(text: "Voice unlock is switched off. Turn it on and save your PIN in my Settings first.", expectsAnswer: false))
+            guard let pin = UnlockStore.pin else {
+                return reply(Reply(text: "I don't have your password yet. Type it into my Settings, under Voice, and I'll be able to unlock your Mac.", expectsAnswer: false))
             }
             guard ScreenUnlock.isLocked else {
                 return reply(Reply(text: "Your Mac is already unlocked.", expectsAnswer: false))

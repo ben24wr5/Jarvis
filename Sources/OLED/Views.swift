@@ -231,9 +231,7 @@ struct SettingsView: View {
     @State private var voiceID = Speaker.selectedVoice?.identifier ?? ""
     @State private var homeTown = Weather.homeTown ?? ""
     @State private var preferBuiltInMic = AudioDevices.preferBuiltInWithBluetooth
-    @State private var unlockOn = UnlockStore.isEnabled
-    @State private var unlockPin = ""
-    @State private var unlockSaved = UnlockStore.pin != nil
+    @State private var unlockPassword = UnlockStore.pin ?? ""
     @State private var openAtLogin = LaunchAtLogin.wanted
     private let voices = Speaker.britishVoices
 
@@ -292,6 +290,17 @@ struct SettingsView: View {
                 Text("Off: OLED listens through your AirPods. On: OLED uses the Mac's microphone and your AirPods keep their best sound quality.")
                     .font(.caption)
                     .foregroundColor(.secondary)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("MacBook password (to unlock by voice)")
+                    TextField("Type your MacBook password", text: $unlockPassword)
+                        .textFieldStyle(.roundedBorder)
+                        .onChange(of: unlockPassword) { value in UnlockStore.pin = value }
+                    Text(unlockPassword.isEmpty
+                         ? "Type your password here, then say “OLED, unlock” when your Mac is locked."
+                         : "Saved. Say “OLED, unlock” when your Mac is locked and I'll type it in for you.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
                 Button("Test voice") {
                     app.say("Hello. I'm OLED. Just say my name whenever you need me.", thenListen: false)
                 }
@@ -312,32 +321,6 @@ struct SettingsView: View {
             Section("Startup") {
                 Toggle("Open OLED when my Mac starts", isOn: $openAtLogin)
                     .onChange(of: openAtLogin) { on in LaunchAtLogin.wanted = on }
-            }
-
-            Section("Voice unlock") {
-                Toggle("Unlock my Mac when I say “OLED, unlock”", isOn: $unlockOn)
-                    .onChange(of: unlockOn) { on in UnlockStore.isEnabled = on }
-                SecureField("Mac login PIN or password", text: $unlockPin)
-                HStack {
-                    Button("Save PIN") {
-                        UnlockStore.pin = unlockPin
-                        unlockPin = ""
-                        unlockSaved = UnlockStore.pin != nil
-                    }
-                    .disabled(unlockPin.isEmpty)
-                    if unlockSaved { Text("Saved in Keychain").foregroundColor(.secondary) }
-                    Spacer()
-                    if unlockSaved {
-                        Button("Remove PIN") {
-                            UnlockStore.pin = nil
-                            unlockSaved = false
-                            unlockOn = false
-                        }
-                    }
-                }
-                Text("Anyone whose voice OLED hears could use this, so only switch it on if you're happy with that. Your PIN is kept in the macOS Keychain. Some macOS versions block apps from typing on the lock screen — if so, OLED will tell you.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
             }
 
             Section("Themes") {
