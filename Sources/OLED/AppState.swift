@@ -2,6 +2,7 @@ import SwiftUI
 import AppKit
 import AVFoundation
 import Speech
+import IOKit.pwr_mgt
 
 final class AppState: ObservableObject {
     enum Stage { case asleep, wake, listening, working, speaking }
@@ -34,6 +35,64 @@ final class AppState: ObservableObject {
 
     /// Plain-English status shown in Settings → Status.
     @Published var listenStatus = "Starting…"
+
+    // MARK: Keep listening while the Mac is locked
+
+    /// Stops macOS slowing OLED down in the background ("App Nap"), so it keeps listening.
+    private var keepAwakeActivity: NSObjectProtocol?
+    /// While the screen is locked: keep the Mac from going to sleep (the display can still turn off),
+    /// so OLED can hear "unlock".
+    private var lockedSleepAssertion: IOPMAssertionID = 0
+    private var watchdog: Timer?
+
+    private func setUpLockedScreenListening() {
+        keepAwakeActivity = ProcessInfo.processInfo.beginActivity(
+            options: [.userInitiatedAllowingIdleSystemSleep, .latencyCritical],
+            reason: "Listening for “OLED”")
+
+        let centre = DistributedNotificationCenter.default()
+        centre.addObserver(forName: NSNotification.Name("com.apple.screenIsLocked"), object: nil, queue: .main) { [weak self] _ in
+            self?.screenLocked(true)
+        }
+        centre.addObserver(forName: NSNotification.Name("com.apple.screenIsUnlocked"), object: nil, queue: .main) { [weak self] _ in
+            self?.screenLocked(false)
+        }
+        let ws = NSWorkspace.shared.notificationCenter
+        for name in [NSWorkspace.screensDidWakeNotification, NSWorkspace.didWakeNotification] {
+            ws.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { self?.restartIfIdle() }
+            }
+        }
+
+        // Watchdog: every few seconds make sure OLED is really still hearing the microphone.
+        watchdog = Timer.scheduledTimer(withTimeInterval: 6, repeats: true) { [weak self] _ in
+            guard let self, self.started, self.stage == .asleep, !self.speaker.isSpeaking,
+                  self.lastBlocked == nil, !self.listener.isHealthy else { return }
+            self.listenStatus = "Listening stopped – restarting"
+            self.restartListening()
+        }
+    }
+
+    private func screenLocked(_ locked: Bool) {
+        listener.lockedScreenMode = locked
+        if locked {
+            if lockedSleepAssertion == 0 {
+                IOPMAssertionCreateWithName(kIOPMAssertionTypePreventUserIdleSystemSleep as CFString,
+                                            IOPMAssertionLevel(kIOPMAssertionLevelOn),
+                                            "OLED is listening for “unlock”" as CFString, &lockedSleepAssertion)
+            }
+        } else if lockedSleepAssertion != 0 {
+            IOPMAssertionRelease(lockedSleepAssertion)
+            lockedSleepAssertion = 0
+        }
+        // Locking/unlocking resets the microphone: start listening again, fresh.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in self?.restartIfIdle() }
+    }
+
+    private func restartIfIdle() {
+        guard started, !speaker.isSpeaking, stage == .asleep || stage == .speaking || !listener.isHealthy else { return }
+        restartListening()
+    }
 
     init() {
         listener.onWake = { [weak self] in self?.heardName() }
@@ -115,6 +174,7 @@ final class AppState: ObservableObject {
     func startAssistant() {
         guard !started else { return }
         started = true
+        setUpLockedScreenListening()
         updater.startAutomaticChecks()
         ensurePermissions { [weak self] _ in
             // Speak first (proves the voice works), then start listening; any problem is explained out loud.

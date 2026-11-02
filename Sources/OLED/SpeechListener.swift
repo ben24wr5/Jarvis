@@ -150,8 +150,23 @@ final class SpeechListener {
     }
 
     private func feed(_ buffer: AVAudioPCMBuffer) {
+        lastBufferTime = Date()
         request?.append(buffer)
         measureLevel(buffer)
+    }
+
+    /// When the microphone last delivered sound (used by the watchdog).
+    private(set) var lastBufferTime = Date()
+
+    /// True when a listening session is running and the microphone is really delivering audio.
+    var isHealthy: Bool {
+        guard isActive, let engine, engine.isRunning else { return false }
+        return Date().timeIntervalSince(lastBufferTime) < 5
+    }
+
+    /// While the Mac is locked, Apple's online recogniser can refuse to work, so use the offline one.
+    var lockedScreenMode = false {
+        didSet { if lockedScreenMode { useOnDevice = true } else { useOnDevice = false } }
     }
 
     /// Fires when the Mac switches microphone (AirPods in or out, a headset plugged in).
